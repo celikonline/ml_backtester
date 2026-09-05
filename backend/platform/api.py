@@ -7,7 +7,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, File, Header, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
 
@@ -36,6 +36,7 @@ def actor(request:Request):
 
 
 def service(request:Request): return request.app.state.experiments
+def nb_service(request:Request): return request.app.state.notebooks
 
 
 def router(dataset_loader, datasets_list):
@@ -43,8 +44,11 @@ def router(dataset_loader, datasets_list):
     async def lifespan(app):
         if not getattr(app.state,"experiments",None): app.state.experiments=ExperimentService(dataset_loader=dataset_loader)
         app.state.experiments.start()
+        from .notebooks.service import NotebookService
+        if not getattr(app.state,"notebooks",None): app.state.notebooks=NotebookService()
         yield
         app.state.experiments.close()
+        app.state.notebooks.close()
 
     api=APIRouter(prefix="/api/v1",dependencies=[Depends(actor)],lifespan=lifespan)
     from .assistants import assistant_router
@@ -257,9 +261,166 @@ def router(dataset_loader, datasets_list):
         out=io.StringIO();writer=csv.DictWriter(out,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
         return Response(out.getvalue(),media_type="text/csv",headers={"Content-Disposition":'attachment; filename="experiment-equity.csv"'})
 
+    # ── Activity ─────────────────────────────────────────────────────────────
     @api.get("/activity")
     def activity(s=Depends(service)):
         with s.engine.connect() as con: return [dict(r) for r in con.execute(select(audits).order_by(audits.c.id.desc()).limit(200)).mappings()]
+
+    # ── Notebook Lab ──────────────────────────────────────────────────────────
+
+    # Environments
+    @api.get("/notebook-environments")
+    def list_nb_environments(nbs=Depends(nb_service)):
+        return nbs.list_environments()
+
+    @api.post("/notebook-environments", status_code=201)
+    def create_nb_environment(body:dict, nbs=Depends(nb_service), who=Depends(actor)):
+        return nbs.create_environment(body, who)
+
+    @api.get("/notebook-environments/{env_id}")
+    def get_nb_environment(env_id:str, nbs=Depends(nb_service)):
+        return nbs.get_environment(env_id)
+
+    # Notebooks registry
+    @api.post("/workspaces/{workspace_id}/notebooks", status_code=201)
+    async def upload_notebook(
+        workspace_id:str,
+        file:UploadFile=File(...),
+        name:str=Query(default=""),
+        description:str=Query(default=""),
+        tags:str=Query(default=""),
+        auto_sanitize:bool=Query(default=False),
+        nbs=Depends(nb_service), who=Depends(actor),
+    ):
+        nb_bytes = await file.read()
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        return nbs.upload(
+            workspace_id=workspace_id, filename=file.filename or "notebook.ipynb",
+            nb_bytes=nb_bytes, name=name or (file.filename or "notebook.ipynb"),
+            description=description, actor=who, tags=tag_list,
+            auto_sanitize=auto_sanitize,
+        )
+
+    @api.get("/workspaces/{workspace_id}/notebooks")
+    def list_workspace_notebooks(workspace_id:str, include_archived:bool=False, nbs=Depends(nb_service)):
+        return nbs.list_notebooks(workspace_id=workspace_id, include_archived=include_archived)
+
+    @api.get("/workspaces/{workspace_id}/notebooks/{notebook_id}")
+    def get_workspace_notebook(workspace_id:str, notebook_id:str, nbs=Depends(nb_service)):
+        return nbs.get_notebook(notebook_id, workspace_id=workspace_id)
+
+    @api.post("/workspaces/{workspace_id}/notebooks/{notebook_id}/archive")
+    def archive_workspace_notebook(workspace_id:str, notebook_id:str, nbs=Depends(nb_service), who=Depends(actor)):
+        nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
+        return nbs.archive_notebook(nb["id"], who)
+
+    @api.post("/workspaces/{workspace_id}/notebooks/inspect")
+    async def inspect_notebook_upload(workspace_id:str, file:UploadFile=File(...), nbs=Depends(nb_service)):
+        nb_bytes = await file.read()
+        return nbs.inspect_notebook(nb_bytes)
+
+    @api.post("/workspaces/{workspace_id}/notebooks/sanitize")
+    async def sanitize_notebook_upload(workspace_id:str, file:UploadFile=File(...), nbs=Depends(nb_service)):
+        nb_bytes = await file.read()
+        sanitized_bytes, changes = nbs.sanitize(nb_bytes)
+        return Response(
+            content=sanitized_bytes,
+            media_type="application/x-ipynb+json",
+            headers={"Content-Disposition": f'attachment; filename="sanitized_{file.filename or "notebook.ipynb"}"'}
+        )
+
+    @api.get("/workspaces/{workspace_id}/notebooks/{notebook_id}/versions")
+    def list_notebook_versions(workspace_id:str, notebook_id:str, nbs=Depends(nb_service)):
+        nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
+        return nbs.list_versions(nb["id"])
+
+    @api.post("/workspaces/{workspace_id}/notebooks/{notebook_id}/versions", status_code=201)
+    async def create_notebook_version(
+        workspace_id:str, notebook_id:str,
+        file:UploadFile=File(...),
+        change_summary:str=Query(default=""),
+        nbs=Depends(nb_service), who=Depends(actor),
+    ):
+        nb_bytes = await file.read()
+        nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
+        return nbs.new_version(
+            notebook_id=nb["id"],
+            nb_bytes=nb_bytes,
+            filename=file.filename or "notebook.ipynb",
+            change_summary=change_summary,
+            actor=who,
+        )
+
+    # Notebook runs
+    @api.post("/workspaces/{workspace_id}/notebook-runs", status_code=202)
+    def create_notebook_run(workspace_id:str, body:dict, nbs=Depends(nb_service), who=Depends(actor)):
+        return nbs.create_run(
+            workspace_id=workspace_id,
+            notebook_id=body["notebook_id"],
+            experiment_id=body.get("experiment_id"),
+            dataset_snapshot_id=body.get("dataset_snapshot_id"),
+            environment_id=body.get("environment_id"),
+            parameters=body.get("parameters", {}),
+            network_mode=body.get("network_mode", "SNAPSHOT_ONLY"),
+            actor=who,
+        )
+
+    @api.get("/workspaces/{workspace_id}/notebook-runs")
+    def list_notebook_runs(workspace_id:str, notebook_id:str|None=None, experiment_id:str|None=None, limit:int=50, nbs=Depends(nb_service)):
+        return nbs.list_runs(workspace_id=workspace_id, notebook_id=notebook_id, experiment_id=experiment_id, limit=limit)
+
+    @api.get("/workspaces/{workspace_id}/notebook-runs/{run_id}")
+    def get_notebook_run(workspace_id:str, run_id:str, nbs=Depends(nb_service)):
+        return nbs.get_run(run_id, workspace_id=workspace_id)
+
+    @api.post("/workspaces/{workspace_id}/notebook-runs/{run_id}/cancel")
+    def cancel_notebook_run(workspace_id:str, run_id:str, nbs=Depends(nb_service), who=Depends(actor)):
+        return nbs.cancel_run(run_id, who)
+
+    @api.get("/workspaces/{workspace_id}/notebook-runs/{run_id}/logs")
+    def get_notebook_run_logs(workspace_id:str, run_id:str, after:int=0, nbs=Depends(nb_service)):
+        return nbs.get_run_logs(run_id, after)
+
+    @api.get("/workspaces/{workspace_id}/notebook-runs/{run_id}/metrics")
+    def get_notebook_run_metrics(workspace_id:str, run_id:str, nbs=Depends(nb_service)):
+        return nbs.get_run_metrics(run_id)
+
+    @api.get("/workspaces/{workspace_id}/notebook-runs/{run_id}/artifacts")
+    def get_notebook_run_artifacts(workspace_id:str, run_id:str, nbs=Depends(nb_service)):
+        return nbs.get_run_artifacts(run_id)
+
+    @api.get("/workspaces/{workspace_id}/notebook-runs/{run_id}/events")
+    async def notebook_run_event_stream(workspace_id:str, run_id:str, request:Request, after:int=0, nbs=Depends(nb_service)):
+        NB_TERMINAL = {"COMPLETED","FAILED","CANCELLED","TIMEOUT","POLICY_REJECTED"}
+        try: cursor=max(after,int(request.headers.get("last-event-id","0")))
+        except ValueError: raise DomainError("Geçersiz event cursor.",422)
+        async def stream():
+            last=cursor
+            while not await request.is_disconnected():
+                records=await asyncio.to_thread(nbs.get_run_logs,run_id,last)
+                for record in records:
+                    last=record["id"]
+                    yield f"id: {last}\ndata: {json.dumps(record,ensure_ascii=False)}\n\n"
+                current=await asyncio.to_thread(nbs.get_run,run_id)
+                if current["status"] in NB_TERMINAL:
+                    yield "event: done\ndata: {}\n\n"
+                    break
+                yield ": heartbeat\n\n"
+                await asyncio.sleep(.75)
+        return StreamingResponse(stream(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+
+    # Workspace secrets
+    @api.get("/workspaces/{workspace_id}/secrets")
+    def list_workspace_secrets(workspace_id:str, nbs=Depends(nb_service)):
+        return nbs.list_secrets(workspace_id)
+
+    @api.put("/workspaces/{workspace_id}/secrets/{key_name}")
+    def set_workspace_secret(workspace_id:str, key_name:str, body:dict, nbs=Depends(nb_service), who=Depends(actor)):
+        return nbs.set_secret(workspace_id, key_name, body.get("value",""), body.get("description",""), who)
+
+    @api.delete("/workspaces/{workspace_id}/secrets/{key_name}")
+    def delete_workspace_secret(workspace_id:str, key_name:str, nbs=Depends(nb_service), who=Depends(actor)):
+        return nbs.delete_secret(workspace_id, key_name, who)
 
     return api
 

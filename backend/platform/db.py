@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from sqlalchemy import JSON, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text, UniqueConstraint, create_engine, event
+from sqlalchemy import JSON, Boolean, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text, UniqueConstraint, create_engine, event
 
 ROOT = Path(__file__).resolve().parents[2]
 STORAGE = Path(os.environ.get("REGIMELAB_STORAGE", ROOT / "data" / "platform")).resolve()
@@ -102,6 +102,75 @@ feature_redundancy_pairs = Table("feature_redundancy_pairs", metadata,
     Column("a", String(160), nullable=False), Column("b", String(160), nullable=False),
     Column("correlation", Float, nullable=False), Column("created_at", String(40), nullable=False))
 Index("ix_feature_redundancy_experiment", feature_redundancy_pairs.c.experiment_id, feature_redundancy_pairs.c.a, feature_redundancy_pairs.c.b, unique=True)
+
+# ── Notebook Lab Tables ─────────────────────────────────────────────────────
+notebook_environments = Table("notebook_environments", metadata,
+    Column("id", String(36), primary_key=True), Column("environment_code", String(40), unique=True, nullable=False),
+    Column("name", String(120), nullable=False), Column("python_version", String(20), nullable=False, default="3.12"),
+    Column("image_ref", String(200)), Column("package_lock_hash", String(64)),
+    Column("requirements", Text), Column("supports_gpu", Integer, nullable=False, default=0),
+    Column("status", String(20), nullable=False, default="ACTIVE"),
+    Column("created_at", String(40), nullable=False), Column("workspace_id", String(36), ForeignKey("workspaces.id")))
+Index("ix_nb_environments_workspace", notebook_environments.c.workspace_id)
+
+notebooks = Table("notebooks", metadata,
+    Column("id", String(36), primary_key=True), Column("notebook_code", String(40), unique=True, nullable=False),
+    Column("workspace_id", String(36), ForeignKey("workspaces.id"), nullable=False),
+    Column("name", String(120), nullable=False), Column("description", Text, nullable=False, default=""),
+    Column("source_filename", String(200), nullable=False), Column("storage_path", Text, nullable=False),
+    Column("content_hash", String(64), nullable=False), Column("version", Integer, nullable=False, default=1),
+    Column("status", String(20), nullable=False, default="ACTIVE"),
+    Column("default_environment_id", String(36), ForeignKey("notebook_environments.id")),
+    Column("tags", JSON), Column("created_by", String(120), nullable=False),
+    Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False),
+    Column("archived_at", String(40)))
+Index("ix_notebooks_workspace", notebooks.c.workspace_id)
+
+notebook_versions = Table("notebook_versions", metadata,
+    Column("id", String(36), primary_key=True), Column("notebook_id", String(36), ForeignKey("notebooks.id"), nullable=False),
+    Column("version", Integer, nullable=False), Column("content_hash", String(64), nullable=False),
+    Column("storage_path", Text, nullable=False), Column("change_summary", Text, nullable=False, default=""),
+    Column("created_by", String(120), nullable=False), Column("created_at", String(40), nullable=False))
+Index("ix_nb_versions_notebook", notebook_versions.c.notebook_id, notebook_versions.c.version, unique=True)
+
+notebook_runs = Table("notebook_runs", metadata,
+    Column("id", String(36), primary_key=True), Column("run_code", String(40), unique=True, nullable=False),
+    Column("workspace_id", String(36), ForeignKey("workspaces.id"), nullable=False),
+    Column("notebook_id", String(36), ForeignKey("notebooks.id"), nullable=False),
+    Column("notebook_version_id", String(36), ForeignKey("notebook_versions.id"), nullable=False),
+    Column("experiment_id", String(36), ForeignKey("experiments.id")),
+    Column("dataset_snapshot_id", String(64), ForeignKey("dataset_snapshots.id")),
+    Column("environment_id", String(36), ForeignKey("notebook_environments.id")),
+    Column("status", String(30), nullable=False, default="DRAFT"),
+    Column("parameters", JSON, nullable=False, default={}),
+    Column("runtime_metadata", JSON, nullable=False, default={}),
+    Column("network_mode", String(30), nullable=False, default="SNAPSHOT_ONLY"),
+    Column("job_pid", Integer),
+    Column("started_at", String(40)), Column("completed_at", String(40)), Column("duration_seconds", Float),
+    Column("exit_code", Integer), Column("error_type", String(80)), Column("error_message", Text),
+    Column("executed_notebook_path", Text),
+    Column("metrics", JSON), Column("artifact_count", Integer, nullable=False, default=0),
+    Column("cancel_requested", Integer, nullable=False, default=0),
+    Column("created_by", String(120), nullable=False), Column("created_at", String(40), nullable=False))
+Index("ix_nb_runs_workspace", notebook_runs.c.workspace_id)
+Index("ix_nb_runs_notebook", notebook_runs.c.notebook_id)
+Index("ix_nb_runs_experiment", notebook_runs.c.experiment_id)
+
+notebook_run_events = Table("notebook_run_events", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("run_id", String(36), ForeignKey("notebook_runs.id"), nullable=False),
+    Column("type", String(80), nullable=False), Column("payload", JSON, nullable=False),
+    Column("created_at", String(40), nullable=False))
+Index("ix_nb_run_events_run", notebook_run_events.c.run_id, notebook_run_events.c.id)
+
+workspace_secrets = Table("workspace_secrets", metadata,
+    Column("id", String(36), primary_key=True), Column("workspace_id", String(36), ForeignKey("workspaces.id"), nullable=False),
+    Column("key_name", String(120), nullable=False), Column("encrypted_value", Text, nullable=False),
+    Column("description", Text, nullable=False, default=""),
+    Column("created_by", String(120), nullable=False), Column("created_at", String(40), nullable=False),
+    Column("updated_at", String(40), nullable=False))
+UniqueConstraint("workspace_id", "key_name", name="uq_workspace_secrets")
+Index("ix_workspace_secrets_workspace", workspace_secrets.c.workspace_id)
 
 
 def connect(url=None):

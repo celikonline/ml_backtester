@@ -8,7 +8,9 @@ Son durum: `pytest` 64 passed, `vite build` yeşil.
 - Yeni ekleme yok; mevcut fonksiyonlar çalışır hale getirilir.
 - Cross-workspace okuma → 404 (enumeration engeli). Tekrar test bloklanmaz;
   sayaç + `POST_TEST_ITERATION_FROM` + risk bayrağı ile izlenir.
-- `result.json` okuyan UI sekmeleri henüz DB'ye bağlanmadı (bilinen borç).
+- `result.json` okuyan UI sekmeleri: registry sekmeleri (Candidate/Feature/
+   Lineage) DB'ye bağlandı; sonuç görünümleri (overview/validation/test
+   rejimleri/karşılaştırma) tasarım gereği `result.json` okur.
 
 ## P0 (2026-09-05 tamamlandı — 37 passed, `vite build` yeşil)
 1. **Kaldıraç/margin uygulaması** — yapıldı: `exposure = max_leverage *
@@ -99,11 +101,11 @@ Son durum: `pytest` 64 passed, `vite build` yeşil.
 - Seal epoch/invalidation/rotation (migration 0005), budget ledger + Risk kartı
 - Per-workspace budget (migration 0007, legacy `global` devri)
 - FX reality: ohlc_range spread, birleşik maliyet yolu, long/short swap,
-  Wed triple, calendar audit, `tests/test_backtest_golden.py` (11 test)
+  Wed triple, calendar audit + FX tatil takvimi, `tests/test_backtest_golden.py` (21 test)
 
 ## Hızlı başlangıç (yeni pencere)
 ```powershell
-git status            # uncommitted Vercel-revert değişikliklerini gözden geçir
+git status
 .\.venv\Scripts\python.exe -m pytest tests -q
 npm --prefix frontend run build
 .\start.ps1           # http://127.0.0.1:8000

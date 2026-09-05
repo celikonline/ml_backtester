@@ -3,6 +3,7 @@ import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, Check, C
 import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { Config, Dataset, Job, Result } from './types';
 import ResearchPlatform from './ResearchPlatform';
+import NotebookLab from './NotebookLab';
 import { useLang } from './i18n';
 import type { Lang } from './i18n';
 import { useWorkspace } from './workspace';
@@ -88,8 +89,8 @@ function App(){
   async function switchAndReload(id:string){switchWorkspace(id);setWorkspaceModal(false);setJob(null);}
   async function createAndSwitch(){const name=newWsName.trim();if(!name)return;setError('');try{await createWorkspace(name.slice(0,120),newWsMarket.trim().slice(0,16));setNewWsName('');setWorkspaceModal(false);}catch(e){setError((e as Error).message);}}
   async function archiveAndRefresh(id:string){if(!window.confirm(t('ws.confirmArchive')))return;setError('');try{await archiveWorkspace(id);}catch(e){setError((e as Error).message);}}
-  const nav=[['platform',t('nav.platform'),FlaskConical],['overview',t('nav.overview'),LayoutDashboard],['data',t('nav.data'),Database],['models',t('nav.models'),Layers3],['regimes',t('nav.regimes'),Activity],['history',t('nav.history'),Clock3]] as const;
-  const heading:Record<string,string>={platform:t('heading.platform'),overview:t('heading.overview'),data:t('heading.data'),models:t('heading.models'),regimes:t('heading.regimes'),history:t('heading.history'),method:t('heading.method')};
+  const nav=[['platform',t('nav.platform'),FlaskConical],['overview',t('nav.overview'),LayoutDashboard],['data',t('nav.data'),Database],['models',t('nav.models'),Layers3],['regimes',t('nav.regimes'),Activity],['notebook','Notebook Lab',BookOpen],['history',t('nav.history'),Clock3]] as const;
+  const heading:Record<string,string>={platform:t('heading.platform'),overview:t('heading.overview'),data:t('heading.data'),models:t('heading.models'),regimes:t('heading.regimes'),history:t('heading.history'),method:t('heading.method'),notebook:'Notebook Lab'};
   return <div className="app-shell">
     <aside className="sidebar">
       <a className="brand" href="#" onClick={e=>{e.preventDefault();setPage('overview');}}><span className="brand-mark"><Activity size={23}/></span><span>regime<span className="brand-light">lab</span><small>{t('brand.sub')}</small></span></a>
@@ -105,6 +106,7 @@ function App(){
       {error&&<div className="alert" role="alert"><span>{error}</span><button aria-label={t('alert.closeError')} onClick={()=>setError('')}><X size={16}/></button></div>}
       <input ref={uploadRef} type="file" accept=".csv,text/csv" hidden onChange={e=>upload(e.target.files?.[0])}/>
       {page==='platform'&&<ResearchPlatform newRequest={platformNew}/>}
+      {page==='notebook'&&<NotebookLab/>}
       {page==='overview'&&<>
         <div className="dataset-strip"><div className="pair-icon">€<span>$</span></div><div className="pair-title"><strong>EUR / USD</strong><span>{t('pair.quote')}</span></div><span className="divider"/><div className="strip-detail"><small>{t('strip.source')}</small><b>{job?job.dataset_name:selected?.name||t('strip.loading')}</b></div><div className="strip-detail hide-small"><small>{t('strip.experiment')}</small><b>{job?`#${job.id.slice(0,8)}`:t('strip.notStarted')}</b></div><span className={`badge ${job?.demo??selected?.demo?'amber':''}`}>{(job?.demo??selected?.demo)?t('strip.synthetic'):t('strip.uploaded')}</span></div>
         <div className="metrics-grid">{[

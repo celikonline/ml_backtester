@@ -156,4 +156,65 @@ async def experiment_resource(experiment_id:str)->str:
 async def feature_resource()->str:
     return json.dumps(await list_features())
 
+# ── Notebook Lab MCP Tools ───────────────────────────────────────────────
+
+@mcp.tool()
+async def list_notebooks(workspace_id:str, include_archived:bool=False)->list:
+    """List all notebooks in a workspace. Use workspace_id from list_workspaces."""
+    return await call("GET", f"/workspaces/{workspace_id}/notebooks?include_archived={str(include_archived).lower()}")
+
+@mcp.tool()
+async def get_notebook(workspace_id:str, notebook_id:str)->dict:
+    """Get notebook details including versions and current status."""
+    return await call("GET", f"/workspaces/{workspace_id}/notebooks/{notebook_id}")
+
+@mcp.tool()
+async def list_notebook_runs(workspace_id:str, notebook_id:str|None=None, experiment_id:str|None=None, limit:int=20)->list:
+    """List notebook runs for a workspace, optionally filtered by notebook or experiment."""
+    qs = f"?limit={limit}"
+    if notebook_id: qs += f"&notebook_id={notebook_id}"
+    if experiment_id: qs += f"&experiment_id={experiment_id}"
+    return await call("GET", f"/workspaces/{workspace_id}/notebook-runs{qs}")
+
+@mcp.tool()
+async def get_notebook_run(workspace_id:str, run_id:str)->dict:
+    """Get details of a specific notebook run including status, metrics and artifacts."""
+    return await call("GET", f"/workspaces/{workspace_id}/notebook-runs/{run_id}")
+
+@mcp.tool()
+async def get_notebook_metrics(workspace_id:str, run_id:str)->dict:
+    """Get the metrics logged by a completed notebook run."""
+    return await call("GET", f"/workspaces/{workspace_id}/notebook-runs/{run_id}/metrics")
+
+@mcp.tool()
+async def get_notebook_artifacts(workspace_id:str, run_id:str)->list:
+    """List artifacts produced by a notebook run."""
+    return await call("GET", f"/workspaces/{workspace_id}/notebook-runs/{run_id}/artifacts")
+
+@mcp.tool()
+async def run_notebook(
+    workspace_id:str,
+    notebook_id:str,
+    experiment_id:str|None=None,
+    dataset_snapshot_id:str|None=None,
+    environment_id:str|None=None,
+    parameters:dict|None=None,
+    network_mode:str="SNAPSHOT_ONLY",
+)->dict:
+    """Queue an approved notebook for async execution. Returns run_id immediately (status=QUEUED)."""
+    body = {
+        "notebook_id": notebook_id,
+        "experiment_id": experiment_id,
+        "dataset_snapshot_id": dataset_snapshot_id,
+        "environment_id": environment_id,
+        "parameters": parameters or {},
+        "network_mode": network_mode,
+    }
+    return await call("POST", f"/workspaces/{workspace_id}/notebook-runs", body)
+
+@mcp.tool()
+async def cancel_notebook_run(workspace_id:str, run_id:str)->dict:
+    """Request cancellation of a running notebook job."""
+    return await call("POST", f"/workspaces/{workspace_id}/notebook-runs/{run_id}/cancel")
+
 if __name__=="__main__": mcp.run(transport="stdio")
