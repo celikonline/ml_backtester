@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from sqlalchemy import JSON, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text, create_engine, event
+from sqlalchemy import JSON, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text, UniqueConstraint, create_engine, event
 
 ROOT = Path(__file__).resolve().parents[2]
 STORAGE = Path(os.environ.get("REGIMELAB_STORAGE", ROOT / "data" / "platform")).resolve()
@@ -31,9 +31,11 @@ audits = Table("audit_logs", metadata,
     Column("source", String(40), nullable=False), Column("operation", String(80), nullable=False), Column("entity_id", String(64)),
     Column("request_id", String(64), nullable=False), Column("details", JSON, nullable=False), Column("created_at", String(40), nullable=False))
 test_seals = Table("test_seals", metadata,
-    Column("seal_id", String(36), primary_key=True), Column("test_dataset_id", String(64), ForeignKey("dataset_snapshots.id"), unique=True, nullable=False),
+    Column("seal_id", String(36), primary_key=True), Column("test_dataset_id", String(64), ForeignKey("dataset_snapshots.id"), nullable=False),
     Column("access_count", Integer, nullable=False, default=0), Column("first_opened_at", String(40)),
-    Column("invalidated_at", String(40)), Column("invalidation_reason", Text), Column("created_at", String(40), nullable=False))
+    Column("invalidated_at", String(40)), Column("invalidation_reason", Text), Column("created_at", String(40), nullable=False),
+    Column("epoch", Integer, nullable=False, default=1),
+    UniqueConstraint("test_dataset_id", "epoch", name="uq_test_seals_dataset_epoch"))
 test_access_events = Table("test_access_events", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True), Column("seal_id", String(36), ForeignKey("test_seals.seal_id"), nullable=False),
     Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("run_id", String(36), ForeignKey("experiment_runs.id")),

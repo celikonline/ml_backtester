@@ -109,6 +109,48 @@ def test_selected_lagged_external_feature_runs_end_to_end(tmp_path):
     assert result["split"]["test"] > 0
 
 
+def test_seal_invalidate_rotate_and_epoch(tmp_path):
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "seal.db").as_posix(), storage=tmp_path / "seal")
+    actor = {"id": "tester", "source": "REST", "request_id": "seal"}
+    try:
+        exp = service.create(make_spec("sealed"), actor)
+        snap = exp["snapshot_id"]
+        first = service.seal_status(snap)
+        assert first["epoch"] == 1 and first["invalidated_at"] is None
+        with pytest.raises(DomainError, match="nedeni gerekli"):
+            service.invalidate_seal(first["seal_id"], "  ", actor)
+        with pytest.raises(DomainError, match="bulunamadı"):
+            service.invalidate_seal("00000000-0000-0000-0000-000000000000", "x", actor)
+        burned = service.invalidate_seal(first["seal_id"], "exposed in review", actor)
+        assert burned["invalidated_at"] and burned["invalidation_reason"] == "exposed in review"
+        assert service.invalidate_seal(first["seal_id"], "other", actor)["invalidation_reason"] == "exposed in review"
+        with pytest.raises(DomainError, match="geçersiz"):
+            service.create(make_spec("after burn"), actor, snapshot_id=snap)
+        second = service.rotate_seal(snap, "fresh epoch for follow-up", actor)
+        assert second["epoch"] == 2 and second["invalidated_at"] is None and second["seal_id"] != first["seal_id"]
+        history = service.seal_history(snap)
+        assert [h["epoch"] for h in history] == [1, 2] and history[0]["invalidated_at"] is not None
+        follow = service.create(make_spec("follow-up"), actor, snapshot_id=snap)
+        assert follow["status"] == "DRAFT"
+        kinds = [e["event_type"] for e in service.ledger()]
+        assert "seal_invalidated" in kinds and "seal_rotated" in kinds
+    finally:
+        service.close()
+
+
+def test_final_test_gate_rejects_burned_seal(tmp_path):
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "gate.db").as_posix(), storage=tmp_path / "gate")
+    actor = {"id": "tester", "source": "REST", "request_id": "gate"}
+    try:
+        exp = service.create(make_spec("gated"), actor)
+        run = service.run(exp["id"], "gate-key", actor)
+        service.invalidate_seal(service.seal_status(exp["snapshot_id"])["seal_id"], "compromised", actor)
+        with pytest.raises(DomainError, match="geçersiz"):
+            service.open_final_test(run["id"])
+    finally:
+        service.close()
+
+
 def test_policy_rejects_excessive_work(tmp_path):
     service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "x.db").as_posix(), storage=tmp_path / "a")
     try:
@@ -135,4 +177,7 @@ def test_versioned_search_space_and_durable_candidate_registry(tmp_path):
         assert service.candidate(candidates[0]["id"])["candidate_key"]
         features=service.feature_evaluations(experiment["id"])
         assert features and len(features[0]["stability_runs"]) == 4
-    finally: service.close()
+    finally:
+        service.close()
+
+

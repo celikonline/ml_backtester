@@ -69,6 +69,9 @@ EXACT = {
     "Dönüşümden sonra yeterli eğitim/test barı yok (en az 160/40).": "Not enough train/test bars after conversion (at least 160/40).",
     "Desteklenmeyen model adapter'ı.": "Unsupported model adapter.",
     "Idempotency-Key başlığı gerekli (1–120 karakter).": "Idempotency-Key header is required (1–120 characters).",
+    "Seal bulunamadı.": "Seal not found.",
+    "Geçersiz kılma nedeni gerekli (1–500 karakter).": "An invalidation reason is required (1–500 characters).",
+    "Rotasyon nedeni gerekli (1–500 karakter).": "A rotation reason is required (1–500 characters).",
 }
 
 PREFIX = {

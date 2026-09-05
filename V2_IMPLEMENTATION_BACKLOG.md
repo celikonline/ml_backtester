@@ -14,22 +14,22 @@ Bu backlog, `REGIMELAB_ASTRA_IMPLEMENTATION_SPEC_V2_QUANTCONNECT_DIFFERENTIATION
 
 ### 1. Global sealed-test servisi
 
-- [ ] `test_seals` tablosu ve migration ekle.
-- [ ] Sealed test için `test_dataset_id`, `seal_id`, `access_count`, `first_opened_at`, `invalidated_at`, `invalidation_reason` alanlarını tanımla.
-- [ ] Test açma/okuma olaylarını `test_access_events` tablosunda kaydet.
-- [ ] Optimizer'ın test verisine erişemediğini servis seviyesinde enforce et.
-- [ ] Aynı sealed dönemde test görüldükten sonra oluşturulan child deneyleri `POST_TEST_ITERATION_FROM` ilişkisiyle işaretle.
-- [ ] Yeni final doğrulama için yeni temporal holdout / yeni seal epoch oluşturma akışı ekle.
+- [x] `test_seals` tablosu ve migration ekle.
+- [x] Sealed test için `test_dataset_id`, `seal_id`, `access_count`, `first_opened_at`, `invalidated_at`, `invalidation_reason` alanlarını tanımla.
+- [x] Test açma/okuma olaylarını `test_access_events` tablosunda kaydet.
+- [x] Optimizer'ın test verisine erişemediğini servis seviyesinde enforce et.
+- [x] Aynı sealed dönemde test görüldükten sonra oluşturulan child deneyleri `POST_TEST_ITERATION_FROM` ilişkisiyle işaretle.
+- [x] Yeni final doğrulama için yeni temporal holdout / yeni seal epoch oluşturma akışı ekle (`POST .../seal/invalidate`, `POST .../seal/rotate`, `GET .../seal/history`; epoch'lar `uq_test_seals_dataset_epoch` ile tutulur, eski epoch'lar denetlenebilir kalır).
 
 Kabul ölçütü: Bir aday test edilmeden önce seal kapalı kalır; test erişimi ve tekrar denemeleri kalıcı olarak izlenir; agent veya REST çağrısı bu politikayı atlayamaz.
 
 ### 2. Research budget ve multiple-testing guard
 
-- [ ] `research_budgets` ve `research_trial_events` tablolarını ekle.
-- [ ] Hipotez, deney, aday, optimizasyon denemesi, backtest ve sealed test erişim sayaçlarını tut.
-- [ ] Deney oluşturma ve çalıştırma öncesi budget/risk tahmini üret.
-- [ ] Politika limitini aşan denemeleri `policy_rejected` ile reddet.
-- [ ] Research Overfitting Risk kartı ve ledger ekranını ekle.
+- [x] `research_budgets` ve `research_trial_events` tablolarını ekle.
+- [x] Hipotez, deney, aday, optimizasyon denemesi, backtest ve sealed test erişim sayaçlarını tut (hipotez/optimizasyon denemesi için ayrı sayaç yok; `seal_invalidated`/`seal_rotated` olayları deftere yazılır).
+- [x] Deney oluşturma ve çalıştırma öncesi budget/risk tahmini üret.
+- [x] Politika limitini aşan denemeleri `policy_rejected` ile reddet.
+- [x] Research Overfitting Risk kartı ve ledger ekranını ekle (Bütçe sekmesi: limit çubukları + baskı skoru + `GET /research/ledger` tablosu).
 
 Kabul ölçütü: Her deney, aday ve test erişimi araştırma defterine yazılır; UI ve API güncel risk/bütçe durumunu gösterir.
 

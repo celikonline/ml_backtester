@@ -156,4 +156,6 @@ def estimate_research_risk(spec, rows, usage=None):
                    (usage.get("candidates", 0) + candidates) / RESEARCH_BUDGET["max_candidates"],
                    (usage.get("backtests", 0) + backtests) / RESEARCH_BUDGET["max_backtests"])
     return {"estimated_candidates": candidates, "estimated_backtests": backtests,
-            "risk_score": min(1.0, round(pressure, 4)), "limits": RESEARCH_BUDGET}
+            "risk_score": min(1.0, round(pressure, 4)), "limits": RESEARCH_BUDGET,
+            "sealed_test_accesses": usage.get("sealed_test_accesses", 0),
+            "post_test_iteration": usage.get("sealed_test_accesses", 0) > 0}

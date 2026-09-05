@@ -65,6 +65,9 @@ def router(dataset_loader, datasets_list):
     @api.get("/research/budget")
     def research_budget(s=Depends(service)): return s.budget_status()
 
+    @api.get("/research/ledger")
+    def research_ledger(limit:int=200,s=Depends(service)): return s.ledger(limit)
+
     @api.get("/search-spaces")
     def list_search_spaces(s=Depends(service)): return s.list_search_spaces()
 
@@ -114,6 +117,21 @@ def router(dataset_loader, datasets_list):
     def seal(identifier:str,s=Depends(service)):
         item=s.get(identifier)
         return s.seal_status(item["snapshot_id"])
+
+    @api.get("/experiments/{identifier}/seal/history")
+    def seal_history(identifier:str,s=Depends(service)):
+        item=s.get(identifier)
+        return s.seal_history(item["snapshot_id"])
+
+    @api.post("/experiments/{identifier}/seal/invalidate")
+    def invalidate_seal(identifier:str,payload:dict,s=Depends(service),who=Depends(actor)):
+        item=s.get(identifier)
+        return s.invalidate_seal(s.seal_status(item["snapshot_id"])["seal_id"],payload.get("reason",""),who)
+
+    @api.post("/experiments/{identifier}/seal/rotate")
+    def rotate_seal(identifier:str,payload:dict,s=Depends(service),who=Depends(actor)):
+        item=s.get(identifier)
+        return s.rotate_seal(item["snapshot_id"],payload.get("reason",""),who)
 
     @api.get("/experiments/{identifier}/lineage")
     def lineage(identifier:str,s=Depends(service)): return s.lineage(identifier)

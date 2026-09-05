@@ -53,6 +53,10 @@ class ExperimentService:
                 con.execute(research_budgets.insert().values(id="global", limits=RESEARCH_BUDGET, created_at=now(), updated_at=now()))
             return {"id":"global", "usage":self._budget_usage(con), "limits":RESEARCH_BUDGET}
 
+    def ledger(self, limit=200):
+        with self.engine.connect() as con:
+            return [dict(row) for row in con.execute(select(research_trial_events).order_by(research_trial_events.c.id.desc()).limit(max(1, min(limit, 500))).offset(0)).mappings()]
+
     def estimate(self, spec, snapshot_id=None):
         spec = ExperimentSpec.model_validate(spec)
         snapshot = self.get_snapshot(snapshot_id) if snapshot_id else None
@@ -65,16 +69,57 @@ class ExperimentService:
         con.execute(research_trial_events.insert().values(budget_id="global", experiment_id=experiment_id, event_type=event_type, quantity=quantity, details=details or {}, created_at=now()))
         con.execute(update(research_budgets).where(research_budgets.c.id == "global").values(updated_at=now()))
 
+    def _active_seal(self, con, snapshot_id):
+        return con.execute(select(test_seals).where(test_seals.c.test_dataset_id == snapshot_id, test_seals.c.invalidated_at.is_(None)).order_by(test_seals.c.epoch.desc())).mappings().first()
+
+    def _latest_seal(self, con, snapshot_id):
+        return con.execute(select(test_seals).where(test_seals.c.test_dataset_id == snapshot_id).order_by(test_seals.c.epoch.desc())).mappings().first()
+
     def seal(self, snapshot_id):
         with self.engine.begin() as con:
-            record = con.execute(select(test_seals).where(test_seals.c.test_dataset_id == snapshot_id)).mappings().first()
+            record = self._active_seal(con, snapshot_id)
             if not record:
-                record = {"seal_id":uid(), "test_dataset_id":snapshot_id, "access_count":0, "created_at":now()}
+                latest = self._latest_seal(con, snapshot_id)
+                epoch = (latest["epoch"] + 1) if latest else 1
+                record = {"seal_id":uid(), "test_dataset_id":snapshot_id, "access_count":0, "epoch":epoch, "created_at":now()}
                 con.execute(test_seals.insert().values(**record))
             return dict(record)
 
     def seal_status(self, snapshot_id):
+        with self.engine.connect() as con:
+            latest = self._latest_seal(con, snapshot_id)
+            if latest: return dict(latest)
         return self.seal(snapshot_id)
+
+    def seal_history(self, snapshot_id):
+        with self.engine.connect() as con:
+            return [dict(row) for row in con.execute(select(test_seals).where(test_seals.c.test_dataset_id == snapshot_id).order_by(test_seals.c.epoch)).mappings()]
+
+    def invalidate_seal(self, seal_id, reason, actor):
+        reason = (reason or "").strip()
+        if not 1 <= len(reason) <= 500: raise DomainError("Geçersiz kılma nedeni gerekli (1–500 karakter).", 422, "invalid_reason")
+        with self.engine.begin() as con:
+            seal = con.execute(select(test_seals).where(test_seals.c.seal_id == seal_id)).mappings().first()
+            if not seal: raise DomainError("Seal bulunamadı.", 404, "not_found")
+            if seal["invalidated_at"]: return dict(seal)
+            con.execute(update(test_seals).where(test_seals.c.seal_id == seal_id).values(invalidated_at=now(), invalidation_reason=reason))
+            self._record_trial(con, "seal_invalidated", details={"seal_id":seal_id, "epoch":seal["epoch"], "reason":reason})
+            self.audit(con, "seal.invalidate", seal_id, actor, {"test_dataset_id":seal["test_dataset_id"], "epoch":seal["epoch"], "reason":reason})
+            return dict(con.execute(select(test_seals).where(test_seals.c.seal_id == seal_id)).mappings().one())
+
+    def rotate_seal(self, snapshot_id, reason, actor):
+        reason = (reason or "").strip()
+        if not 1 <= len(reason) <= 500: raise DomainError("Rotasyon nedeni gerekli (1–500 karakter).", 422, "invalid_reason")
+        with self.engine.begin() as con:
+            latest = self._latest_seal(con, snapshot_id)
+            if not latest: raise DomainError("Seal bulunamadı.", 404, "not_found")
+            if latest["invalidated_at"] is None:
+                con.execute(update(test_seals).where(test_seals.c.seal_id == latest["seal_id"]).values(invalidated_at=now(), invalidation_reason="rotated: " + reason))
+            record = {"seal_id":uid(), "test_dataset_id":snapshot_id, "access_count":0, "epoch":latest["epoch"] + 1, "invalidated_at":None, "invalidation_reason":None, "created_at":now()}
+            con.execute(test_seals.insert().values(**record))
+            self._record_trial(con, "seal_rotated", details={"seal_id":record["seal_id"], "epoch":record["epoch"], "reason":reason, "supersedes":latest["seal_id"]})
+            self.audit(con, "seal.rotate", record["seal_id"], actor, {"test_dataset_id":snapshot_id, "epoch":record["epoch"], "reason":reason, "supersedes":latest["seal_id"]})
+            return dict(record)
 
     def create_search_space(self, definition, actor):
         definition=SearchSpaceDefinition.model_validate(definition)
@@ -99,8 +144,8 @@ class ExperimentService:
         return spec.model_copy(update={"features":features,"models":space.models,"optimization":optimization,"regime_states":space.regime_states})
 
     def _open_seal_for_final_test(self, con, item, run_id):
-        seal = con.execute(select(test_seals).where(test_seals.c.test_dataset_id == item["snapshot_id"])).mappings().one()
-        if seal["invalidated_at"]:
+        seal = con.execute(select(test_seals).where(test_seals.c.test_dataset_id == item["snapshot_id"], test_seals.c.invalidated_at.is_(None)).order_by(test_seals.c.epoch.desc())).mappings().first()
+        if not seal:
             raise DomainError("Test seal'i geçersiz kılınmış; yeni temporal holdout oluşturun.", 409, "seal_invalidated")
         # The worker may open a seal only at this exact frozen-candidate boundary.
         con.execute(test_access_events.insert().values(seal_id=seal["seal_id"], experiment_id=item["id"], run_id=run_id, actor="worker", purpose="final_frozen_candidate_test", created_at=now()))
@@ -171,11 +216,13 @@ class ExperimentService:
                   "name":spec.name,"status":"DRAFT","specification":spec.model_dump(),"owner":actor.get("id","local-user"),"created_at":now(),"updated_at":now()}
         with self.engine.begin() as con:
             con.execute(experiments.insert().values(**record))
-            if not con.execute(select(test_seals.c.seal_id).where(test_seals.c.test_dataset_id == snapshot["id"])).first():
-                con.execute(test_seals.insert().values(seal_id=uid(), test_dataset_id=snapshot["id"], access_count=0, created_at=now()))
+            if not con.execute(select(test_seals.c.seal_id).where(test_seals.c.test_dataset_id == snapshot["id"], test_seals.c.invalidated_at.is_(None))).first():
+                if con.execute(select(test_seals.c.seal_id).where(test_seals.c.test_dataset_id == snapshot["id"])).first():
+                    raise DomainError("Test seal'i geçersiz kılınmış; yeni temporal holdout oluşturun.", 409, "seal_invalidated")
+                con.execute(test_seals.insert().values(seal_id=uid(), test_dataset_id=snapshot["id"], access_count=0, epoch=1, created_at=now()))
             self._record_trial(con,"experiment_created",experiment_id=identifier,details={"risk":risk})
             if parent_id:
-                parent_seal=con.execute(select(test_seals).where(test_seals.c.test_dataset_id==snapshot["id"])).mappings().one()
+                parent_seal=con.execute(select(test_seals).where(test_seals.c.test_dataset_id==snapshot["id"]).order_by(test_seals.c.epoch.desc())).mappings().first()
                 relation="POST_TEST_ITERATION_FROM" if parent_seal["access_count"] else "CLONED_FROM"
                 con.execute(experiment_edges.insert().values(from_experiment_id=parent_id,to_experiment_id=identifier,relation_type=relation,reason_code="shared_sealed_dataset",actor_type=actor.get("source","REST"),change_summary={"seal_id":parent_seal["seal_id"]},created_at=now()))
             self.audit(con,"experiment.clone" if parent_id else "experiment.create",identifier,actor,{"parent_id":parent_id,"snapshot_hash":snapshot["sha256"]})

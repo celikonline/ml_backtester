@@ -42,6 +42,25 @@ async def get_research_budget()->dict:
     return await call("GET","/research/budget")
 
 @mcp.tool()
+async def get_research_ledger(limit:int=200)->list:
+    """Read the persistent research trial ledger (budget consumption history)."""
+    return await call("GET",f"/research/ledger?limit={limit}")
+
+@mcp.tool()
+async def get_test_seal_status(experiment_id:str)->dict:
+    return await call("GET",f"/experiments/{experiment_id}/seal")
+
+@mcp.tool()
+async def invalidate_test_seal(experiment_id:str,reason:str)->dict:
+    """Burn the sealed test for an experiment's dataset; further runs need an explicit rotation."""
+    return await call("POST",f"/experiments/{experiment_id}/seal/invalidate",{"reason":reason})
+
+@mcp.tool()
+async def rotate_test_seal(experiment_id:str,reason:str)->dict:
+    """Open a new seal epoch for an experiment's dataset; the old epoch stays auditable."""
+    return await call("POST",f"/experiments/{experiment_id}/seal/rotate",{"reason":reason})
+
+@mcp.tool()
 async def run_experiment(experiment_id:str,idempotency_key:str)->dict:
     """Queue a frozen experiment once; returns immediately with a durable job ID."""
     return await call("POST",f"/experiments/{experiment_id}/run",key=idempotency_key)
