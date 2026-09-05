@@ -576,7 +576,7 @@ class ExperimentService:
                     row_ids[candidate["id"]]=row[0]
                     continue
                 row_id=uid()
-                con.execute(optimization_candidates.insert().values(id=row_id,experiment_id=experiment_id,candidate_key=candidate["id"],generation=candidate.get("generation"),genome=candidate["genome"],metrics=metrics,fitness=candidate["fitness"],pareto_rank=rank,dominance_count=dominates,decision=decision,artifact_ref=artifact_ref,created_at=now()))
+                con.execute(optimization_candidates.insert().values(id=row_id,experiment_id=experiment_id,candidate_key=candidate["id"],generation=candidate.get("generation"),genome=candidate["genome"],metrics=metrics,fold_metrics=candidate.get("folds") or [],fitness=candidate["fitness"],pareto_rank=rank,dominance_count=dominates,decision=decision,artifact_ref=artifact_ref,created_at=now()))
                 row_ids[candidate["id"]]=row_id
             for candidate in candidates:
                 child=row_ids.get(candidate["id"])

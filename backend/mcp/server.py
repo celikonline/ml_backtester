@@ -5,17 +5,24 @@ import uuid
 import httpx
 from mcp.server.fastmcp import FastMCP
 from backend.platform.schema import ExperimentSpec, SearchSpaceDefinition
+from backend.platform.api import DomainError
 
 mcp=FastMCP("RegimeLab")
 BASE=os.environ.get("REGIMELAB_API_URL","http://127.0.0.1:8000/api/v1").rstrip("/")
 
-async def call(method,path,body=None,key=None):
+async def call(method,path,body=None,key=None,workspace_id:str|None=None):
     headers={"X-RegimeLab-Source":"MCP","X-Request-ID":str(uuid.uuid4())}
     if os.environ.get("REGIMELAB_API_KEY"): headers["Authorization"]="Bearer "+os.environ["REGIMELAB_API_KEY"]
     if key: headers["Idempotency-Key"]=key
+    headers["X-Workspace-Id"]=workspace_id or ""
     async with httpx.AsyncClient(timeout=30,trust_env=False) as client:
         response=await client.request(method,BASE+path,json=body,headers=headers)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            try:
+                err=response.json()
+                raise DomainError(err.get("detail",err.get("error",{}).get("message","Bilinmeyen hata")), response.status_code, err.get("code","api_error"))
+            except Exception:
+                raise DomainError(f"HTTP {response.status_code}", response.status_code, "api_error")
         return response.json()
 
 @mcp.tool()
@@ -30,6 +37,16 @@ async def get_workspace(workspace_id:str)->dict:
 async def create_workspace(name:str,description:str="",market:str="",base_currency:str="",timezone:str="UTC")->dict:
     """Create a real workspace record; research scope switches to it explicitly."""
     return await call("POST","/workspaces",{"name":name,"description":description,"market":market,"base_currency":base_currency,"timezone":timezone})
+
+@mcp.tool()
+async def patch_workspace(identifier:str,body:dict)->dict:
+    """Patch a workspace."""
+    return await call("PATCH",f"/workspaces/{identifier}",body)
+
+@mcp.tool()
+async def archive_workspace(identifier:str)->dict:
+    """Archive a workspace."""
+    return await call("POST",f"/workspaces/{identifier}/archive")
 
 @mcp.tool()
 async def create_experiment(specification:ExperimentSpec)->dict:
@@ -93,6 +110,31 @@ async def list_experiments(workspace_id:str|None=None)->list:
     return await call("GET",f"/experiments{suffix}")
 
 @mcp.tool()
+async def get_search_space(identifier:str)->dict:
+    """Get a search space by identifier."""
+    return await call("GET",f"/search-spaces/{identifier}")
+
+@mcp.tool()
+async def get_models()->list:
+    """Get model registry."""
+    return await call("GET","/models")
+
+@mcp.tool()
+async def get_feature_families()->list:
+    """Get feature families."""
+    return await call("GET","/feature-families")
+
+@mcp.tool()
+async def get_capabilities()->dict:
+    """Get MCP/REST capabilities."""
+    return await call("GET","/capabilities")
+
+@mcp.tool()
+async def get_specification_schema()->dict:
+    """Get experiment specification schema."""
+    return await call("GET","/specification/schema")
+
+@mcp.tool()
 async def get_experiment(experiment_id:str)->dict:
     return await call("GET",f"/experiments/{experiment_id}")
 
@@ -141,12 +183,93 @@ async def get_backtest_results(experiment_id:str)->dict:
     return await call("GET",f"/experiments/{experiment_id}/backtest")
 
 @mcp.tool()
-async def get_regime_analysis(experiment_id:str)->dict:
-    return await call("GET",f"/experiments/{experiment_id}/regimes")
+async def patch_experiment(experiment_id:str,specification:ExperimentSpec)->dict:
+    """Patch an experiment specification (only DRAFT experiments)."""
+    return await call("PATCH",f"/experiments/{experiment_id}",specification.model_dump())
+
+@mcp.tool()
+async def get_seal_history(experiment_id:str)->list:
+    """Get the seal history for an experiment's dataset."""
+    return await call("GET",f"/experiments/{experiment_id}/seal/history")
+
+@mcp.tool()
+async def get_logs(experiment_id:str,after:int=0)->list:
+    """Get experiment execution logs."""
+    return await call("GET",f"/experiments/{experiment_id}/logs?after={after}")
+
+@mcp.tool()
+async def get_metrics(experiment_id:str)->dict:
+    """Get validation and test metrics for a completed experiment."""
+    return await call("GET",f"/experiments/{experiment_id}/metrics")
 
 @mcp.tool()
 async def get_artifacts(experiment_id:str)->list:
     return await call("GET",f"/experiments/{experiment_id}/artifacts")
+
+@mcp.tool()
+async def get_experiment_result(experiment_id:str)->dict:
+    """Get experiment result (only COMPLETED experiments)."""
+    return await call("GET",f"/experiments/{experiment_id}/result")
+
+@mcp.tool()
+async def get_feature_evaluations(experiment_id:str)->list:
+    """Get feature evaluation history."""
+    return await call("GET",f"/experiments/{experiment_id}/feature-evaluations")
+
+@mcp.tool()
+async def get_candidate(experiment_id:str,identifier:str)->dict:
+    """Get a specific candidate."""
+    return await call("GET",f"/experiments/{experiment_id}/candidates/{identifier}")
+
+@mcp.tool()
+async def get_pareto(experiment_id:str)->dict:
+    """Get Pareto front for optimization."""
+    return await call("GET",f"/experiments/{experiment_id}/pareto")
+
+@mcp.tool()
+async def get_equity(experiment_id:str)->dict:
+    """Get equity curve."""
+    return await call("GET",f"/experiments/{experiment_id}/equity")
+
+@mcp.tool()
+async def list_assistants()->list:
+    """List AI assistants (templates + configured)."""
+    return await call("GET","/assistants")
+
+@mcp.tool()
+async def create_assistant(config:dict)->dict:
+    """Create a new AI assistant configuration."""
+    return await call("POST","/assistants",config)
+
+@mcp.tool()
+async def update_assistant(identifier:str,config:dict)->dict:
+    """Update an existing AI assistant configuration."""
+    return await call("PUT",f"/assistants/{identifier}",config)
+
+@mcp.tool()
+async def clone_assistant(identifier:str,name:str)->dict:
+    """Clone an AI assistant."""
+    return await call("POST",f"/assistants/{identifier}/clone",{"name":name})
+
+@mcp.tool()
+async def list_tasks()->list:
+    """List AI assistant tasks."""
+    return await call("GET","/assistant-tasks")
+
+@mcp.tool()
+async def get_task(identifier:str)->dict:
+    """Get a specific AI task."""
+    return await call("GET",f"/assistant-tasks/{identifier}")
+
+@mcp.tool()
+async def cancel_task(identifier:str)->dict:
+    """Cancel an AI task."""
+    return await call("POST",f"/assistant-tasks/{identifier}/cancel")
+
+@mcp.tool()
+async def run_task(body:dict)->dict:
+    """Run an AI assistant task."""
+    return await call("POST","/assistant-tasks",body)
 
 @mcp.resource("regimelab://experiments/{experiment_id}")
 async def experiment_resource(experiment_id:str)->str:
@@ -216,5 +339,10 @@ async def run_notebook(
 async def cancel_notebook_run(workspace_id:str, run_id:str)->dict:
     """Request cancellation of a running notebook job."""
     return await call("POST", f"/workspaces/{workspace_id}/notebook-runs/{run_id}/cancel")
+
+@mcp.tool()
+async def get_activity()->list:
+    """Get recent activity log."""
+    return await call("GET","/activity")
 
 if __name__=="__main__": mcp.run(transport="stdio")

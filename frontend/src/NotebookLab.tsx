@@ -21,6 +21,7 @@ import { request, headers, terminal as isTerminal } from './platform-api';
 import type { Event } from './platform-api';
 import { useWorkspace } from './workspace';
 import { useLang } from './i18n';
+import './notebook.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, File, Header, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from .schema import ExperimentSpec, SearchSpaceDefinition, WorkspaceCreate, WorkspacePatch, CloneSpec, CompareSpec, DomainError, POLICY, TERMINAL
 from .service import ExperimentService
@@ -122,8 +122,8 @@ def router(dataset_loader, datasets_list):
     @api.get("/models")
     def models(): return [{"id":k,**v} for k,v in MODEL_REGISTRY.items()]
 
-    @api.get("/experiments")
-    def list_experiments(q:str="",status:str|None=None,model:str|None=None,optimizer:str|None=None,tag:str|None=None,workspace_id:str|None=None,s=Depends(service)):
+    @api.get("/past-experiments")
+    def list_past_experiments(q:str="",status:str|None=None,model:str|None=None,optimizer:str|None=None,tag:str|None=None,workspace_id:str|None=None,s=Depends(service)):
         return s.list(q,status,model,optimizer,tag,workspace_id)
 
     @api.post("/experiments",status_code=201)
@@ -263,8 +263,14 @@ def router(dataset_loader, datasets_list):
 
     # ── Activity ─────────────────────────────────────────────────────────────
     @api.get("/activity")
-    def activity(s=Depends(service)):
-        with s.engine.connect() as con: return [dict(r) for r in con.execute(select(audits).order_by(audits.c.id.desc()).limit(200)).mappings()]
+    def activity(page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=500), s=Depends(service)):
+        with s.engine.connect() as con:
+            total = con.execute(select(audits.c.id).order_by(audits.c.id.desc())).scalar()
+            total = con.execute(select(func.count()).select_from(audits)).scalar() if total is None else 1  # fallback
+        offset = (page - 1) * page_size
+        with s.engine.connect() as con:
+            rows = con.execute(select(audits).order_by(audits.c.id.desc()).limit(page_size).offset(offset)).mappings().all()
+        return {"page": page, "page_size": page_size, "total": total, "items": [dict(r) for r in rows]}
 
     # ── Notebook Lab ──────────────────────────────────────────────────────────
 

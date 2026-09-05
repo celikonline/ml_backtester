@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, Check, ChevronDown, CircleHelp, Clock3, Database, FlaskConical, Layers3, LayoutDashboard, Loader2, Moon, Play, Plus, Radio, Settings2, Square, Sun, Terminal, Upload, X, Zap } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, Calendar, Check, ChevronDown, Circle, CircleHelp, Clock3, Database, FlaskConical, Layers3, LayoutDashboard, LayoutGrid, List, Loader2, LogOut, Moon, Play, Plus, Radio, Search, Settings2, Square, Sun, Tag, Terminal, Upload, X, Zap } from 'lucide-react';
 import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { Config, Dataset, Job, Result } from './types';
 import ResearchPlatform from './ResearchPlatform';
 import NotebookLab from './NotebookLab';
+import AuthPage from './AuthPage';
+import { useAuth } from './auth';
 import { useLang } from './i18n';
 import type { Lang } from './i18n';
 import { useWorkspace } from './workspace';
@@ -67,12 +69,22 @@ function App(){
   const { current: workspace, workspaces, switchWorkspace, createWorkspace, archiveWorkspace, error: wsError } = useWorkspace();
   const wsId = workspace?.id ?? null;
   const [platformNew,setPlatformNew]=useState(0);
+  const [histQuery,setHistQuery]=useState(''),[histStatus,setHistStatus]=useState(''),[histDataset,setHistDataset]=useState(''),[histView,setHistView]=useState<'grid'|'list'>('grid');
   const [theme,setTheme]=useState<'dark'|'light'>(()=>localStorage.getItem('regimelab.theme')==='light'?'light':'dark');
+  const { user: authUser, ready: authReady, logout } = useAuth();
   const [project,setProject]=useState<{notebooks:{name:string;cells:number}[];scope:string}|null>(null);
   const [config,setConfig]=useState<Config>({dataset_id:'demo',interval:'native',train_ratio:0.65,states:3,cost_bps:0.5,capital:10000});
   const uploadRef=useRef<HTMLInputElement>(null),dialogRef=useRef<HTMLDialogElement>(null),workspaceDialogRef=useRef<HTMLDialogElement>(null);
   const result=job?.result,active=!!job&&['running','queued'].includes(job.status);
   const selected=datasets.find(d=>d.id===config.dataset_id)||datasets[0];
+  const histDatasets=Array.from(new Set(history.map(h=>h.dataset_name).filter(Boolean)));
+  const histFiltered=history.filter(h=>{
+    const q=histQuery.trim().toLowerCase();
+    const okQ=!q||h.id.toLowerCase().includes(q)||h.dataset_name.toLowerCase().includes(q)||statusLabelFor(h.status,lang).toLowerCase().includes(q);
+    const okS=!histStatus||h.status===histStatus;
+    const okD=!histDataset||h.dataset_name===histDataset;
+    return okQ&&okS&&okD;
+  });
   async function refresh(){const [ds,hs,pr]=await Promise.all([api<Dataset[]>('/datasets',undefined,lang),api<Job[]>('/runs',undefined,lang),api<{notebooks:{name:string;cells:number}[];scope:string}>('/project',undefined,lang)]);setDatasets(ds);setHistory(hs);setProject(pr);setOnline(true);return hs;}
   useEffect(()=>{let alive=true;refresh().then(async hs=>{if(hs.length){const j=await api<Job>(`/runs/${hs[0].id}`,undefined,lang);if(alive)setJob(j);}}).catch(e=>{setError(e.message);setOnline(false);});return()=>{alive=false;};},[wsId]);
   useEffect(()=>{if(!active||!job)return;let alive=true;const id=job.id;const timer=setInterval(()=>{api<Job>(`/runs/${id}`,undefined,lang).then(j=>{if(!alive)return;setJob(j);setOnline(true);if(!['running','queued'].includes(j.status))refresh().catch(()=>{});}).catch(e=>{if(alive){setError(e.message);setOnline(false);}});},1000);return()=>{alive=false;clearInterval(timer);};},[job?.id,active]);
@@ -91,6 +103,8 @@ function App(){
   async function archiveAndRefresh(id:string){if(!window.confirm(t('ws.confirmArchive')))return;setError('');try{await archiveWorkspace(id);}catch(e){setError((e as Error).message);}}
   const nav=[['platform',t('nav.platform'),FlaskConical],['overview',t('nav.overview'),LayoutDashboard],['data',t('nav.data'),Database],['models',t('nav.models'),Layers3],['regimes',t('nav.regimes'),Activity],['notebook','Notebook Lab',BookOpen],['history',t('nav.history'),Clock3]] as const;
   const heading:Record<string,string>={platform:t('heading.platform'),overview:t('heading.overview'),data:t('heading.data'),models:t('heading.models'),regimes:t('heading.regimes'),history:t('heading.history'),method:t('heading.method'),notebook:'Notebook Lab'};
+  if(!authReady)return <div className="auth-loading"><Loader2 size={26} className="spin"/></div>;
+  if(!authUser)return <AuthPage/>;
   return <div className="app-shell">
     <aside className="sidebar">
       <a className="brand" href="#" onClick={e=>{e.preventDefault();setPage('overview');}}><span className="brand-mark"><Activity size={23}/></span><span>regime<span className="brand-light">lab</span><small>{t('brand.sub')}</small></span></a>
@@ -98,7 +112,7 @@ function App(){
       <span className="nav-label">{t('workspace.label')}</span>
       <nav>{nav.map(([id,label,Icon])=><button key={id} className={page===id?'nav-item selected':'nav-item'} onClick={()=>setPage(id)}><Icon size={18}/>{label}{id==='overview'&&<span className="nav-dot"/>}</button>)}</nav>
       <div className="sidebar-note"><div className="tiny-icon"><FlaskConical size={17}/></div><strong>{t('sidebar.tagline')}</strong><p>{t('sidebar.taglineSub')}</p><button onClick={()=>setPage('method')}>{t('sidebar.structure')} <ArrowUpRight size={14}/></button></div>
-      <div className="sidebar-bottom"><button className={`nav-item ${page==='method'?'selected':''}`} onClick={()=>setPage('method')}><BookOpen size={18}/>{t('nav.method')}</button><div className="user"><span>Q</span><div>{t('user.role')}<small>{t('user.stack')}</small></div><span className="connection-dot"/></div></div>
+      <div className="sidebar-bottom"><button className={`nav-item ${page==='method'?'selected':''}`} onClick={()=>setPage('method')}><BookOpen size={18}/>{t('nav.method')}</button><div className="user"><span>{(authUser.name||authUser.email||'Q').trim().charAt(0).toUpperCase()}</span><div className="user-meta"><b title={authUser.name}>{authUser.name}</b><small title={authUser.email}>{authUser.email}</small></div><button type="button" className="user-logout" title={t('auth.logout')} aria-label={t('auth.logout')} onClick={logout}><LogOut size={15}/></button></div></div>
     </aside>
     <div className="main-shell"><header className="topbar"><div className="breadcrumb">{t('topbar.workspace')} <span>/</span><b>{heading[page]}</b></div><div className="topbar-right"><span className={online?'connection':'connection offline'}><i/>{online?t('topbar.online'):t('topbar.offline')}</span><span className="local-label">LOCAL</span><LangSwitch/><button className="icon-button theme-toggle" title={theme==='dark'?t('topbar.light'):t('topbar.dark')} aria-label={theme==='dark'?t('topbar.light'):t('topbar.dark')} onClick={()=>setTheme(current=>current==='dark'?'light':'dark')}>{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button><button className="icon-button" title={t('topbar.methodology')} aria-label={t('topbar.openMethodology')} onClick={()=>setPage('method')}><CircleHelp size={18}/></button></div></header>
     <main>
@@ -125,7 +139,7 @@ function App(){
       {page==='data'&&<><div className="upload-zone" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(!uploading)upload(e.dataTransfer.files[0]);}}><Upload size={30}/><h2>{t('data.dropTitle')}</h2><p>{t('data.dropSub')}</p><div><button className="primary" disabled={uploading} onClick={()=>uploadRef.current?.click()}>{uploading?<Loader2 size={16} className="spin"/>:<Upload size={16}/>}{t('data.upload')}</button><a className="secondary" href="/api/sample.csv" download>{t('data.sample')}</a><a className="secondary" href="/api/sample-external.csv" download>{t('data.lagSample')}</a></div><code>Timestamp, Open, High, Low, Close[, macro__name, macro__name__available_at]</code><p className="footnote">{t('data.footnote')} <code>macro__</code>, <code>cross_asset__</code>, <code>fx__</code> {lang==='en'?'or':'veya'} <code>rates__</code> {t('data.footnote2')} <code>__available_at</code> {t('data.footnote3')}</p></div><section className="panel"><div className="panel-heading"><div><h2>{t('data.sets')}</h2><p>{t('data.setsSub')}</p></div><span className="badge">{datasets.length} {t('data.setCount')}</span></div><div className="table-wrap"><table><thead><tr><th>{t('data.colDataset')}</th><th>{t('data.colRows')}</th><th>{t('data.colStart')}</th><th>{t('data.colEnd')}</th><th>{t('data.colSource')}</th><th/></tr></thead><tbody>{datasets.map(d=><tr key={d.id}><td><Database size={14}/>{d.name}</td><td>{fmt(d.rows,0)}</td><td>{fmtDate(d.start)}</td><td>{fmtDate(d.end)}</td><td><span className={`badge ${d.demo?'amber':''}`}>{d.demo?t('data.synthetic'):'CSV'}</span></td><td><button className="text-button" onClick={()=>setConfig({...config,dataset_id:d.id})}>{config.dataset_id===d.id?<><Check size={14}/>{t('data.selected')}</>:t('data.select')}</button></td></tr>)}</tbody></table></div></section>{selected&&<section className="panel spacing-top"><div className="panel-heading"><div><h2>{t('data.preview')}</h2><p>{selected.name} · {t('data.lastBars')}</p></div><button className="secondary" onClick={()=>setModal(true)} disabled={active}>{t('data.withData')} <ArrowRight size={14}/></button></div><div className="table-wrap"><table><thead><tr><th>{t('data.colTime')}</th>{selected.columns.map(c=><th key={c}>{c}</th>)}</tr></thead><tbody>{selected.preview.map((r,i)=><tr key={i}><td>{String(r.timestamp).replace('T',' ').slice(0,16)}</td>{selected.columns.map(c=><td key={c}>{fmt(Number(r[c]),5)}</td>)}</tr>)}</tbody></table></div></section>}</>}
       {page==='models'&&(result?<><div className="expert-grid">{result.experts.map((expert,i)=><section className="panel expert-card" key={expert.name}><span className="expert-icon" style={{color:colors[i],background:`${colors[i]}15`}}><Layers3 size={24}/></span><span className="eyebrow">{t('models.expert')} 0{i+1}</span><h2>{expert.name}</h2><p>{expert.family}</p><div className="expert-stat"><b>{expert.features.length}</b><span>{t('models.techFeat')}</span></div><div className="feature-tags">{expert.features.map(f=><span key={f}>{f}</span>)}</div></section>)}</div><section className="panel spacing-top"><div className="panel-heading"><div><h2>{t('models.results')}</h2><p>{t('models.resultsSub')}</p></div></div><Comparison result={result}/></section></>:<Empty onStart={()=>setModal(true)} title={t('models.emptyTitle')} text={t('models.emptyText')}/>)}
       {page==='regimes'&&(result?<><div className="regime-cards">{result.regimes.map(r=><section className="panel regime-card" key={r.id}><span className="badge" style={{color:colors[r.id]}}>{t('regimes.stateBadge')} {r.id}</span><h2>{fmt(r.share*100,1)}<small>%</small></h2><p>{fmt(r.bars,0)} {t('regimes.testBars')}</p><div className="regime-stat"><span>{t('regimes.persistence')}</span><b>{fmt(r.persistence*100,1)}%</b></div><div className="regime-stat"><span>{t('regimes.meanRet')}</span><b>{fmt(r.mean_return_bps)} bp</b></div><h3>{t('regimes.weights')}</h3>{r.weights.map((w,i)=><div className="weight-row" key={i}><div><span>{result.experts[i].name}</span><b>{fmt(w*100,1)}%</b></div><div className="weight-track"><span style={{width:`${w*100}%`,background:colors[i]}}/></div></div>)}</section>)}</div><section className="panel spacing-top"><div className="panel-heading"><div><h2>{t('regimes.matrix')}</h2><p>{t('regimes.matrixSub')}</p></div></div><div className="table-wrap"><table className="transition-table"><thead><tr><th>{t('regimes.transition')}</th>{result.regimes.map(r=><th key={r.id}>S{r.id}</th>)}</tr></thead><tbody>{result.transition.map((row,i)=><tr key={i}><th>S{i}</th>{row.map((v,j)=><td key={j} style={{background:`rgba(85,223,176,${v*.23})`}}>{fmt(v*100,1)}%</td>)}</tr>)}</tbody></table></div></section><p className="footnote">{t('regimes.note')}</p></>:<Empty onStart={()=>setModal(true)} title={t('regimes.emptyTitle')} text={t('regimes.emptyText')}/>)}
-      {page==='history'&&<section className="panel"><div className="panel-heading"><div><h2>{t('hist.title')}</h2><p>{t('hist.sub')}</p></div><span className="badge">{history.length} {t('hist.count')}</span></div>{history.length?<div className="table-wrap"><table><thead><tr><th>{t('hist.colExp')}</th><th>{t('hist.colDataset')}</th><th>{t('hist.colDate')}</th><th>{t('hist.colStatus')}</th><th>{t('hist.colRegime')}</th><th/></tr></thead><tbody>{history.map(h=><tr key={h.id}><td>#{h.id.slice(0,8)}</td><td>{h.dataset_name}</td><td>{fmtDate(h.created_at)}</td><td><span className="badge">{statusLabelFor(h.status,lang)}</span></td><td>{h.config.states} {t('hist.states')}</td><td><button className="text-button" disabled={active&&h.id!==job?.id} onClick={()=>openRun(h.id)}>{t('hist.inspect')} <ArrowUpRight size={14}/></button></td></tr>)}</tbody></table></div>:<div className="small-empty"><Clock3 size={26}/><span>{t('hist.empty')}</span></div>}</section>}
+      {page==='history'&&<HistoryCatalog history={history} filtered={histFiltered} datasets={histDatasets} query={histQuery} setQuery={setHistQuery} status={histStatus} setStatus={setHistStatus} dataset={histDataset} setDataset={setHistDataset} view={histView} setView={setHistView} active={active} jobId={job?.id} onOpen={openRun} onNew={()=>setModal(true)} />}
       {page==='method'&&<div className="method-layout"><section className="panel prose"><span className="eyebrow">{t('method.kicker')}</span><h2>{t('method.title')}</h2><p>{t('method.intro')}</p><h3>{t('method.notebooks')}</h3>{project?.notebooks.map(n=><div className="notebook" key={n.name}><BookOpen size={20}/><div><b>{n.name}</b><p>{n.name.startsWith('optimus')?t('method.nbOptimus'):t('method.nbTez')}</p></div><span>{n.cells} {t('method.cells')}</span></div>)}<h3>{t('method.flow')}</h3><p>{project?.scope}</p><ol>{(result?.notes||[t('method.note1'),t('method.note2'),t('method.note3'),t('method.note4'),t('method.note5')]).map(n=><li key={n}>{n}</li>)}</ol><h3>{t('method.findings')}</h3><p>{t('method.findingsText')}</p><p>{t('method.sharpe')}</p><div className="inline-note">{t('method.synthetic')}</div></section><section className="panel method-side"><h2>{t('method.protocol')}</h2><div><small>{t('method.goal')}</small><b>{t('method.goalV')}</b></div><div><small>{t('method.val')}</small><b>{t('method.valV')}</b></div><div><small>{t('method.gap')}</small><b>{t('method.gapV')}</b></div><div><small>{t('method.regime')}</small><b>{t('method.regimeV')}</b></div><div><small>{t('method.seed')}</small><b>42</b></div><div><small>{t('method.cost')}</small><b>{t('method.costV')}</b></div></section></div>}
       <footer className="footer"><span><Activity size={13}/>REGIME LAB <i/> {t('footer.built')}</span><span>{t('footer.local')}</span></footer>
     </main></div>
@@ -136,6 +150,45 @@ function App(){
     <label className="slider-label">{t('dlg.trainRatio')} <b>{fmt(config.train_ratio*100,0)}%</b><input type="range" min="50" max="75" step="5" value={Math.round(config.train_ratio*100)} onChange={e=>setConfig({...config,train_ratio:Number(e.target.value)/100})}/></label><div className="split-bar"><span style={{width:`${config.train_ratio*100}%`}}/><span style={{width:'15%'}}/><span style={{flex:1}}/></div><div className="split-labels"><span>{t('dlg.train')} %{fmt(config.train_ratio*100,0)}</span><span>{t('dlg.validation')} %15</span><span>{t('dlg.test')} %{fmt((.85-config.train_ratio)*100,0)}</span></div>
     <div className="inline-note"><Clock3 size={16}/><span>{t('dlg.note')}</span></div><button className="primary full-width" disabled={busy||active||!datasets.length} type="submit">{busy?<Loader2 size={16} className="spin"/>:<Play size={16}/>}{t('dlg.start')}</button></form></dialog>
   </div>;
+}
+
+function HistoryCatalog({history,filtered,datasets,query,setQuery,status,setStatus,dataset,setDataset,view,setView,active,jobId,onOpen,onNew}:{history:Job[];filtered:Job[];datasets:string[];query:string;setQuery:(v:string)=>void;status:string;setStatus:(v:string)=>void;dataset:string;setDataset:(v:string)=>void;view:'grid'|'list';setView:(v:'grid'|'list')=>void;active:boolean;jobId?:string;onOpen:(id:string)=>void;onNew:()=>void}){
+  const { t, lang, fmt, fmtDate } = useLang();
+  const statuses=['queued','running','completed','failed','cancelled'];
+  return <section className="panel hist-catalog">
+    <div className="panel-heading hist-heading"><div><h2>{t('hist.title')}</h2><p>{t('hist.sub')}</p></div><span className="badge">{history.length} {t('hist.count')}</span></div>
+    <div className="hist-toolbar">
+      <div className="hist-filters">
+        <label className="hist-select"><select aria-label={t('hist.colStatus')} value={status} onChange={e=>setStatus(e.target.value)}><option value="">{t('hist.statusAll')}</option>{statuses.map(s=><option key={s} value={s}>{statusLabelFor(s,lang)}</option>)}</select><ChevronDown size={15}/></label>
+        <label className="hist-select"><select aria-label={t('hist.colDataset')} value={dataset} onChange={e=>setDataset(e.target.value)}><option value="">{t('hist.datasetAll')}</option>{datasets.map(d=><option key={d} value={d}>{d}</option>)}</select><ChevronDown size={15}/></label>
+        <label className="hist-search"><input placeholder={t('hist.searchPh')} aria-label={t('hist.searchAria')} value={query} onChange={e=>setQuery(e.target.value)}/><Search size={16}/></label>
+        <button className="hist-list-btn" onClick={onNew}><Plus size={15}/>{t('action.newExperiment')}</button>
+      </div>
+      <div className="hist-view-toggle" role="group" aria-label="view">
+        <button className={view==='grid'?'chosen':''} title={t('hist.gridView')} aria-label={t('hist.gridView')} aria-pressed={view==='grid'} onClick={()=>setView('grid')}><LayoutGrid size={16}/></button>
+        <button className={view==='list'?'chosen':''} title={t('hist.listView')} aria-label={t('hist.listView')} aria-pressed={view==='list'} onClick={()=>setView('list')}><List size={16}/></button>
+      </div>
+    </div>
+    {!filtered.length?<div className="small-empty"><Clock3 size={26}/><span>{history.length?t('hist.noResult'):t('hist.empty')}</span></div>:
+    view==='grid'?<div className="hist-grid">{filtered.map(h=>{
+      const m=h.result?.metrics;
+      const desc=m
+        ? `${lang==='en'?'Net return':'Net getiri'} ${m.return>=0?'+':''}${fmt(m.return*100)}% · Sharpe ${fmt(m.sharpe)} · ${lang==='en'?'Max DD':'Maks. düşüş'} ${fmt(m.max_drawdown*100)}%`
+        : (h.message||`${h.config.states} ${t('hist.statesShort')} · ${h.config.interval} · ${fmt(h.config.cost_bps,1)} bp · $${fmt(h.config.capital,0)}`);
+      return <article className="hist-card" key={h.id}>
+        <div className="hist-vendor"><span className="hist-wordmark">#{h.id.slice(0,8)}</span><span className={`badge hist-status-${h.status}`}>{statusLabelFor(h.status,lang)}</span></div>
+        <h3>{h.dataset_name}</h3>
+        <p title={desc}>{desc}</p>
+        <ul className="hist-meta">
+          <li><Circle size={13}/><span>{h.config.states} {t('hist.states')} · {h.config.interval}</span></li>
+          <li><Calendar size={13}/><span>{fmtDate(h.created_at)}</span></li>
+          <li><Tag size={13}/><span>{h.demo?(lang==='en'?'Synthetic':'Sentetik'):'CSV'} · {h.progress}% · {h.config.train_ratio?`${fmt(h.config.train_ratio*100,0)}% train`:''}</span></li>
+        </ul>
+        <button className="hist-learn" disabled={active&&h.id!==jobId} onClick={()=>onOpen(h.id)}>{t('hist.learnMore')} <ArrowUpRight size={14}/></button>
+      </article>;
+    })}</div>:
+    <div className="table-wrap hist-list"><table><thead><tr><th>{t('hist.colExp')}</th><th>{t('hist.colDataset')}</th><th>{t('hist.colDate')}</th><th>{t('hist.colStatus')}</th><th>{t('hist.colRegime')}</th><th/></tr></thead><tbody>{filtered.map(h=><tr key={h.id}><td><span className="hist-wordmark small">#{h.id.slice(0,8)}</span><small className="table-subline">{h.dataset_name}</small></td><td>{h.dataset_name}</td><td>{fmtDate(h.created_at)}</td><td><span className="badge">{statusLabelFor(h.status,lang)}</span></td><td>{h.config.states} {t('hist.states')}</td><td><button className="hist-learn" disabled={active&&h.id!==jobId} onClick={()=>onOpen(h.id)}>{t('hist.inspect')} <ArrowUpRight size={14}/></button></td></tr>)}</tbody></table></div>}
+  </section>;
 }
 
 function Comparison({result}:{result:Result}){

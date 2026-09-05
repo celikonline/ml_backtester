@@ -100,7 +100,7 @@ Kabul ölçütü: Feature analizi yalnızca tek `result.json` içindeki bir çı
 - [x] Objective vector: Sharpe, Return, Sortino, MaxDrawdown, Turnover, Cost. (aday başına `objectives` + yön haritası; cost = turnover × tek-yön tahmini)
 - [x] Constraint: min trades, max exposure, max drawdown. (`min_trades`/`max_exposure` spec'te, ihlal listesi adayda)
 - [x] Pareto rank ve domination count hesapla ve kaydet.
-- [ ] Pareto frontier UI/API'da objective seçimini destekle.
+- [x] Pareto frontier UI/API'da objective seçimini destekle. (scatter X/Y eksen seçimi: 6 objective; API zaten aday başına metrics+objectives döndürür)
 
 ### 10. RegimeRouter
 

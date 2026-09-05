@@ -354,6 +354,8 @@ def test_candidate_parents_persisted_and_read(tmp_path):
         assert by_key["b" * 16]["generation"] == 2 and by_key["b" * 16]["parents"] == ["a" * 16]
         assert by_key["c" * 16]["decision"] == "rejected_constraint"
         assert sorted(by_key["c" * 16]["parents"]) == ["a" * 16, "b" * 16]
+        assert by_key["a" * 16]["fold_metrics"] == []
+        assert by_key["b" * 16]["fold_metrics"] == []
         assert service.candidate(by_key["b" * 16]["id"])["parents"] == ["a" * 16]
         service.persist_candidates(experiment["id"], payload, "frozen_candidate.json")
         assert len(service.candidates(experiment["id"])) == 3
@@ -628,6 +630,8 @@ def test_versioned_search_space_and_durable_candidate_registry(tmp_path):
         candidates=service.candidates(experiment["id"])
         assert candidates and candidates[0]["decision"] == "selected"
         assert service.candidate(candidates[0]["id"])["candidate_key"]
+        assert len(candidates[0]["fold_metrics"]) == draft.validation.folds
+        assert candidates[0]["fold_metrics"][0]["train_end"]
         features=service.feature_evaluations(experiment["id"])
         assert features and len(features[0]["stability_runs"]) == 4
     finally:
