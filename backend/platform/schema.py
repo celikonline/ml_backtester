@@ -24,6 +24,9 @@ class OptimizationSpec(Contract):
     hyperparameters: bool = True
     objective: Literal["sharpe", "return"] = "sharpe"
     max_drawdown: float = Field(.5, gt=0, le=1)
+    min_trades: int = Field(0, ge=0, le=100000)
+    max_exposure: float | None = Field(None, gt=0, le=1)
+    max_worst_regime_drawdown: float | None = Field(None, gt=0, le=1)
     thresholds_bps: list[float] = Field(default_factory=lambda:[0, .25, .5, 1, 2], min_length=1, max_length=20)
 
     @model_validator(mode="after")

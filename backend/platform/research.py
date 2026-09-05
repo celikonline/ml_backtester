@@ -89,11 +89,92 @@ def score(ret, signal, annual):
     return m
 
 
+#: Minimum validation bars for a regime slice to count toward the
+#: worst-regime gate and coverage. Smaller slices are reported but ignored.
+MIN_REGIME_BARS = 15
+
+
+class RegimeRouter:
+    """Turns descriptive regimes into a measurable selection input.
+
+    The HMM behind ``states`` is fitted on development data only and states
+    come from causal forward-filtering, so reports use validation folds only:
+    never test data, never future bars. The router records per-regime
+    validation metrics plus worst-regime drawdown and coverage; selection
+    pressure flows through the worst-regime gate in ``check_constraints``.
+    Per-regime model/strategy routing at inference is explicitly out of scope.
+    """
+
+    def __init__(self, states, n_states, min_regime_bars=MIN_REGIME_BARS):
+        self.states = np.asarray(states)
+        self.n_states = n_states
+        self.min_regime_bars = min_regime_bars
+
+    def report(self, ret, signal, annual):
+        ret, signal = np.asarray(ret, dtype=float), np.asarray(signal)
+        entries = []
+        for k in range(self.n_states):
+            mask = self.states == k
+            bars = int(mask.sum())
+            if bars:
+                m = metrics(ret[mask], signal[mask], annual)
+                entry = {"regime": int(k), "bars": bars, "share": float(mask.mean()),
+                         "sharpe": m["sharpe"], "return": m["return"], "max_drawdown": m["max_drawdown"],
+                         "qualified": bool(bars >= self.min_regime_bars)}
+            else:
+                entry = {"regime": int(k), "bars": 0, "share": 0.0,
+                         "sharpe": 0.0, "return": 0.0, "max_drawdown": 0.0, "qualified": False}
+            entries.append(entry)
+        qualified = [e for e in entries if e["qualified"]]
+        worst = min((e["max_drawdown"] for e in qualified), default=None)
+        coverage = len(qualified) / self.n_states if self.n_states else 0.0
+        return {"regime_metrics": entries, "worst_regime_drawdown": worst, "regime_coverage": float(coverage)}
+
+
 def splits(n, method, train_ratio, folds, gap):
     if method == "holdout":
         a = int(n * train_ratio / (train_ratio + .15))
         return [(np.arange(a-gap), np.arange(a,n))]
     return list(TimeSeriesSplit(n_splits=folds, gap=gap).split(np.arange(n)))
+
+
+#: Objective vector recorded per candidate: key → True when higher is better.
+#: Turnover and cost are minimized. Exposure stays a constraint (and metric),
+#: not a dominance dimension, so the Pareto front keeps its return-quality
+#: semantics from (sharpe, return, max_drawdown).
+OBJECTIVE_DIRECTIONS = {"sharpe": True, "return": True, "sortino": True,
+                        "max_drawdown": True, "turnover": False, "cost_bps_estimate": False}
+
+
+def _dominates(a, b):
+    """Higher is better on sharpe, return and (negative) max_drawdown."""
+    keys = ("sharpe", "return", "max_drawdown")
+    return all(a[k] >= b[k] for k in keys) and any(a[k] > b[k] for k in keys)
+
+
+def pareto_ranks(candidates):
+    """Non-dominated sorting layers over feasible candidates (rank 0 = front).
+
+    Infeasible candidates get no rank (``None``); ``pareto_front`` below
+    returns exactly the rank-0 set.
+    """
+    feasible = [c for c in candidates if c["feasible"]]
+    by_id = {c["id"]: c for c in feasible}
+    remaining = set(by_id)
+    ranks = {}
+    rank = 0
+    while remaining:
+        front = [i for i in remaining
+                 if not any(j != i and _dominates(by_id[j]["metrics"], by_id[i]["metrics"]) for j in remaining)]
+        if not front:  # defensive: identical metrics can never empty the front
+            for i in sorted(remaining):
+                ranks[i] = rank
+            break
+        for i in sorted(front):
+            ranks[i] = rank
+            remaining.discard(i)
+        rank += 1
+    return ranks
 
 
 def pareto_front(candidates):
@@ -105,13 +186,32 @@ def pareto_front(candidates):
 
 
 def merged_reality(spec):
-    """Single cost-model source: validation folds and the final test share it."""
-    return spec.backtest.reality.model_copy(update={"slippage_bps": spec.backtest.slippage_bps + spec.backtest.reality.slippage_bps,
-                                                    "spread_bps": spec.backtest.spread_bps + 2 * spec.backtest.cost_bps})
+    """Single cost-model source: validation folds and the final test share it.
+
+    ``reality`` is the source of truth for leverage sizing; the legacy
+    top-level ``BacktestSpec.max_leverage / max_position_fraction`` are only
+    honored when ``reality`` is still at its default (backward compatibility).
+    """
+    reality = spec.backtest.reality
+    leverage = reality.max_leverage
+    fraction = reality.max_position_fraction
+    if spec.backtest.max_leverage != 1.0 and leverage == 1.0:
+        leverage = spec.backtest.max_leverage
+    if spec.backtest.max_position_fraction != 1.0 and fraction == 1.0:
+        fraction = spec.backtest.max_position_fraction
+    return reality.model_copy(update={"slippage_bps": spec.backtest.slippage_bps + reality.slippage_bps,
+                                                    "spread_bps": spec.backtest.spread_bps + 2 * spec.backtest.cost_bps,
+                                                    "max_leverage": leverage,
+                                                    "max_position_fraction": fraction})
 
 
-def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None):
-    """This function receives no holdout/test data, index or test callback."""
+def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
+    """This function receives no holdout/test data, index or test callback.
+
+    ``router`` (a dev-fitted, causal RegimeRouter) adds validation-only regime
+    reports to every candidate and enables the worst-regime gate. Without it
+    the gate is skipped and regime fields stay empty.
+    """
     o = spec.optimization
     rng = np.random.default_rng(spec.seed)
     columns = list(x_dev.columns)
@@ -119,6 +219,17 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None):
     partitions = splits(len(x_dev), spec.validation.method, spec.validation.train_ratio, spec.validation.folds, spec.validation.gap)
     reality = merged_reality(spec)
     cache, generations = {}, []
+    # One-way cost estimate per unit turnover (fixed leg of the merged reality;
+    # the ohlc_range leg varies per bar and is accounted exactly in fx_backtest).
+    one_way_bps = reality.spread_bps / 2 + reality.commission_bps + reality.slippage_bps
+    # Lineage bookkeeping (never hashed into the genome): birth round's parent
+    # candidate ids per genome key. First-seen evaluation wins; elites and
+    # duplicate genomes keep their original generation/parents.
+    birth_parents: dict[str, list[str]] = {}
+    current_round = {"n": 1}
+
+    def genome_key(genome):
+        return hashlib.sha256(json.dumps(genome, sort_keys=True).encode()).hexdigest()[:16]
 
     def repair(mask):
         ids = np.flatnonzero(mask)
@@ -133,12 +244,22 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None):
         return {"mask": repair(rng.random(len(columns)) < .5).tolist(), "model": str(rng.choice(spec.models)),
                 "param": int(rng.integers(3)) if o.hyperparameters else 1, "threshold": float(rng.choice(o.thresholds_bps))}
 
+    def check_constraints(m, regime):
+        violations = []
+        if abs(m["max_drawdown"]) > o.max_drawdown: violations.append("max_drawdown")
+        if m["position_changes"] < o.min_trades: violations.append("min_trades")
+        if o.max_exposure is not None and m["exposure"] > o.max_exposure + 1e-12: violations.append("max_exposure")
+        if o.max_worst_regime_drawdown is not None:
+            worst = regime.get("worst_regime_drawdown")
+            if worst is None or worst < -o.max_worst_regime_drawdown: violations.append("worst_regime_drawdown")
+        return violations
+
     def evaluate(genome):
-        key = hashlib.sha256(json.dumps(genome,sort_keys=True).encode()).hexdigest()[:16]
+        key = genome_key(genome)
         if key in cache: return cache[key]
         chosen = [c for c,on in zip(columns,genome["mask"]) if on]
         params = MODEL_REGISTRY[genome["model"]]["parameters"][genome["param"]]
-        returns, signals, fold_metrics = [], [], []
+        returns, signals, positions, fold_metrics = [], [], [], []
         for train, val in partitions:
             emit("optimization.candidate.started", {"evaluated": len(cache), "candidate_id": key})
             model = ModelAdapter(genome["model"], params, spec.seed).fit(x_dev.iloc[train][chosen],y_dev[train])
@@ -146,25 +267,43 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None):
             stamps = x_dev.index[val]
             bars = (dev_market["high"].to_numpy()[val], dev_market["low"].to_numpy()[val]) if dev_market is not None else (None, None)
             ret, sig, _ = fx_backtest(pred,y_dev[val],reality,stamps,genome["threshold"]/10000,high=bars[0],low=bars[1])
-            returns.extend(ret); signals.extend(sig)
+            returns.extend(ret); signals.extend(sig); positions.extend(np.asarray(val).tolist())
             fold_metrics.append({"train_end": x_dev.index[train[-1]].isoformat(), "validation_start": x_dev.index[val[0]].isoformat(),
                                  "validation_end": x_dev.index[val[-1]].isoformat(), "gap_bars": int(val[0]-train[-1]-1), **score(ret,sig,annual)})
         m = score(np.array(returns),np.array(signals),annual)
-        feasible = abs(m["max_drawdown"]) <= o.max_drawdown
+        if router is not None:
+            aligned = RegimeRouter(router.states[np.asarray(positions)], router.n_states, router.min_regime_bars)
+            regime = aligned.report(np.array(returns), np.array(signals), annual)
+        else:
+            regime = {"regime_metrics": [], "worst_regime_drawdown": None, "regime_coverage": 0.0}
+        violations = check_constraints(m, regime)
+        feasible = not violations
         fitness = m[o.objective] if feasible else -1000000 - abs(m["max_drawdown"])
+        objectives = {"sharpe": m["sharpe"], "return": m["return"], "sortino": m["sortino"],
+                      "max_drawdown": m["max_drawdown"], "turnover": m["turnover"],
+                      "cost_bps_estimate": float(m["turnover"] * one_way_bps)}
         c = {"id": key, "genome": genome, "features": chosen, "model": genome["model"], "parameters": params,
-             "threshold_bps": genome["threshold"], "metrics": m, "fitness": fitness, "feasible": feasible, "folds": fold_metrics}
+             "threshold_bps": genome["threshold"], "metrics": m, "fitness": fitness, "feasible": feasible, "folds": fold_metrics,
+             "objectives": objectives, "constraint_violations": violations,
+             "regime_metrics": regime["regime_metrics"], "worst_regime_drawdown": regime["worst_regime_drawdown"],
+             "regime_coverage": regime["regime_coverage"],
+             "generation": current_round["n"], "parents": list(birth_parents.get(key, []))}
         cache[key] = c
         return c
 
     if o.algorithm == "none":
         genomes = [{"mask": [True]*len(columns), "model": name, "param": 1, "threshold": 0.0} for name in spec.models]
+        for g in genomes:
+            birth_parents.setdefault(genome_key(g), [])
         population = [evaluate(g) for g in genomes]
     else:
         population = [random_genome() for _ in range(o.population)]
         # Ensure every requested model is represented in the initial population.
         for i, model_id in enumerate(spec.models[:len(population)]): population[i]["model"] = model_id
+        for g in population:
+            birth_parents.setdefault(genome_key(g), [])
         for generation in range(o.generations):
+            current_round["n"] = generation + 1
             started = time.monotonic()
             ranked = sorted([evaluate(g) for g in population], key=lambda c:(c["fitness"],c["id"]), reverse=True)
             values = [c["fitness"] for c in ranked]
@@ -175,8 +314,9 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None):
             emit("optimization.generation.completed",summary)
             new = [dict(c["genome"]) for c in ranked[:o.elitism]]
             while len(new) < o.population:
-                parents = rng.choice(len(ranked),size=(2,3))
-                p1,p2 = [max((ranked[int(i)] for i in ids),key=lambda c:c["fitness"])["genome"] for ids in parents]
+                draws = rng.choice(len(ranked),size=(2,3))
+                p1c,p2c = [max((ranked[int(i)] for i in triplet),key=lambda c:c["fitness"]) for triplet in draws]
+                p1,p2 = p1c["genome"],p2c["genome"]
                 mask = np.array(p1["mask"],dtype=bool)
                 if rng.random() < o.crossover_rate:
                     choose = rng.random(len(mask)) < .5
@@ -188,11 +328,16 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None):
                 if o.hyperparameters and rng.random() < o.mutation_rate: child["param"] = int(rng.integers(3))
                 if rng.random() < o.mutation_rate: child["threshold"] = float(rng.choice(o.thresholds_bps))
                 new.append(child)
+                birth_parents.setdefault(genome_key(child), sorted({p1c["id"], p2c["id"]}))
             population = new
         population = list(cache.values())
     candidates = sorted(cache.values(),key=lambda c:(c["fitness"],c["id"]),reverse=True)
     feasible = [c for c in candidates if c["feasible"]]
-    if not feasible: raise ValueError("Doğrulama düşüş sınırını sağlayan aday yok. Test açılmadı.")
+    if not feasible: raise ValueError("Kısıtları sağlayan aday yok (düşüş/işlem/pozisyon). Test açılmadı.")
+    ranks = pareto_ranks(candidates)
+    for c in candidates:
+        c["pareto_rank"] = ranks.get(c["id"])
+        c["dominance_count"] = sum(1 for d in candidates if d["id"] != c["id"] and _dominates(d["metrics"], c["metrics"]))
     top = feasible[:max(1,int(np.ceil(len(feasible)*.25)))]
     survival = [{"feature":name,"selection_frequency":float(np.mean([name in c["features"] for c in candidates])),
                  "top_survival":float(np.mean([name in c["features"] for c in top])),
@@ -202,20 +347,43 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None):
             "optimizer_access":"DEVELOPMENT_ONLY", "validation_method":spec.validation.method}
 
 
-def feature_analysis(x, y, seed):
+def _windowed_ic(series, y):
+    windows = []
+    for indices in np.array_split(np.arange(len(series)), 4):
+        segment, target = series.iloc[indices], y[indices]
+        v = spearmanr(segment, target).statistic if segment.nunique() > 1 and np.std(target) > 0 else 0
+        windows.append(float(v) if np.isfinite(v) else 0)
+    return windows
+
+
+def _regime_metrics(series, y, states, n_states):
+    """Per-regime Spearman IC on development data (descriptive, never selective)."""
+    out = []
+    for k in range(n_states):
+        mask = np.asarray(states) == k
+        segment, target = series.iloc[mask], y[mask]
+        ic = spearmanr(segment, target).statistic if mask.sum() >= 15 and segment.nunique() > 1 and np.std(target) > 0 else 0
+        out.append({"regime": int(k), "bars": int(mask.sum()), "share": float(mask.mean()),
+                    "ic": float(ic) if np.isfinite(ic) else 0.0})
+    return out
+
+
+def feature_analysis(x, y, seed, missingness=None, dev_states=None, n_states=0):
     # Development data only. No test-based feature ranking or pruning.
     sample = np.linspace(0,len(x)-1,min(5000,len(x)),dtype=int)
     mutual = mutual_info_regression(x.iloc[sample],y[sample],random_state=seed)
+    missingness = missingness or {}
     out = []
     for i,c in enumerate(x):
         series = x[c]
         ic = spearmanr(series,y).statistic if series.nunique()>1 and np.std(y)>0 else 0
-        windows = []
-        for indices in np.array_split(np.arange(len(x)),4):
-            v = spearmanr(series.iloc[indices],y[indices]).statistic if series.iloc[indices].nunique()>1 and np.std(y[indices])>0 else 0
-            windows.append(float(v) if np.isfinite(v) else 0)
-        out.append({"feature":c,"ic":float(ic) if np.isfinite(ic) else 0,"rolling_ic":windows,
-                    "sign_consistency":float(np.mean(np.sign(windows)==np.sign(ic))),"mutual_information":float(mutual[i])})
+        windows = _windowed_ic(series, y)
+        item = {"feature":c,"ic":float(ic) if np.isfinite(ic) else 0,"rolling_ic":windows,
+                "sign_consistency":float(np.mean(np.sign(windows)==np.sign(ic))),"mutual_information":float(mutual[i]),
+                "missingness":float(missingness.get(c, 0.0))}
+        if dev_states is not None:
+            item["regime_metrics"] = _regime_metrics(series, y, dev_states, n_states)
+        out.append(item)
     corr = x.corr().fillna(0)
     redundant = [{"a":a,"b":b,"correlation":float(corr.loc[a,b])} for i,a in enumerate(x) for b in list(x)[i+1:] if abs(corr.loc[a,b])>=.9]
     return {"scope":"development_only","features":out,"redundancy_pairs":redundant,"window_count":4}
@@ -243,6 +411,9 @@ def _execute(df,spec,emit,artifact_dir):
     selected = spec.features.names or [f["id"] for f in choices if (
         "technical" in spec.features.groups or f["category"] in spec.features.groups or f.get("family") in spec.features.families)]
     if not selected or not set(selected)<=set(x): raise ValueError("Özellik seçimi geçersiz.")
+    # Marginal NaN share per selected feature before rows are dropped; stored
+    # durably so missingness is measured, not assumed.
+    missingness = {c: float(x[c].isna().mean()) for c in selected}
     x = x[selected].dropna()
     regime_frame = regime_frame.reindex(x.index)
     target = target.reindex(x.index)
@@ -253,17 +424,24 @@ def _execute(df,spec,emit,artifact_dir):
     if dev_end<160 or len(x)-b<40: raise ValueError("Dönüşümden sonra yeterli eğitim/test barı yok (en az 160/40).")
     x_dev,y_dev = x.iloc[:dev_end].copy(),y[:dev_end].copy()
     annual = 252*24/(df.index.to_series().diff().median().total_seconds()/3600)
+    # Descriptive regimes are fitted on development data only, before any
+    # candidate is evaluated, so the router's validation reports cannot leak
+    # test information. The same fit is reused for test-period reporting below.
+    scaler = StandardScaler().fit(regime_frame.iloc[:dev_end])
+    z = scaler.transform(regime_frame)
+    hmm = GaussianHMM(n_components=spec.regime_states,n_iter=100,covariance_type="diag",random_state=spec.seed).fit(z[:dev_end])
+    full_states = causal_probabilities(hmm,z).argmax(axis=1)
+    router = RegimeRouter(full_states[:dev_end], spec.regime_states)
     emit("stage",{"status":"TRAINING","progress":15,"message":"Model havuzu ve zaman bölümleri hazırlanıyor"})
     emit("stage",{"status":"OPTIMIZING","progress":20,"message":"Adaylar yalnızca geliştirme verisinde değerlendiriliyor"})
     dev_market = df[["high", "low"]].reindex(x_dev.index)
-    optimization = optimize(x_dev,y_dev,spec,annual,emit,dev_market)
+    optimization = optimize(x_dev,y_dev,spec,annual,emit,dev_market,router)
     best = optimization["best"]
     emit("stage",{"status":"VALIDATING","progress":70,"message":"Seçilen aday sabitleniyor"})
     freeze = {"candidate":best,"development_end":x_dev.index[-1].isoformat(),"test_start":x.index[b].isoformat(),"seed":spec.seed}
     (artifact_dir/"frozen_candidate.json").write_text(json.dumps(freeze,ensure_ascii=False,allow_nan=False),encoding="utf-8")
     model = ModelAdapter(best["model"],best["parameters"],spec.seed).fit(x_dev[best["features"]],y_dev)
     model.save(artifact_dir/"model.joblib")
-    analysis = feature_analysis(x_dev,y_dev,spec.seed)
     emit("candidate.frozen",{"id":best["id"],"features":best["features"],"test_access":"CLOSED_UNTIL_FREEZE"})
     emit("stage",{"status":"TESTING","progress":80,"message":"Sabit aday için tek final test ölçümü"})
     forecast = model.predict(x.iloc[b:][best["features"]])
@@ -281,10 +459,10 @@ def _execute(df,spec,emit,artifact_dir):
               "drawdown":float(equity[i]/peak[i]-1),"return":float(ret[i]),"signal":int(signal[i]),"prediction_bps":float(forecast[i]*10000)} for i,t in enumerate(timestamps)]
     # HMM is descriptive here; fitted on development data, never on test.
     emit("stage",{"status":"ANALYZING","progress":94,"message":"Rejimler, özellik kararlılığı ve maliyet duyarlılığı"})
-    scaler = StandardScaler().fit(regime_frame.iloc[:dev_end])
-    z = scaler.transform(regime_frame)
-    hmm = GaussianHMM(n_components=spec.regime_states,n_iter=100,covariance_type="diag",random_state=spec.seed).fit(z[:dev_end])
-    states = causal_probabilities(hmm,z).argmax(axis=1)[b:]
+    states = full_states[b:]
+    # Feature intelligence is descriptive and computed after the freeze; regime
+    # ICs use development rows only, matching feature_analysis scope.
+    analysis = feature_analysis(x_dev,y_dev,spec.seed,missingness,full_states[:dev_end],spec.regime_states)
     regimes = []
     for k in range(spec.regime_states):
         mask = states==k

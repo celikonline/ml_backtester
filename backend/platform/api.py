@@ -47,6 +47,8 @@ def router(dataset_loader, datasets_list):
         app.state.experiments.close()
 
     api=APIRouter(prefix="/api/v1",dependencies=[Depends(actor)],lifespan=lifespan)
+    from .assistants import assistant_router
+    api.include_router(assistant_router(service, actor))
 
     @api.get("/capabilities")
     def capabilities():
@@ -209,6 +211,9 @@ def router(dataset_loader, datasets_list):
 
     @api.get("/experiments/{identifier}/feature-evaluations")
     def feature_evaluation_history(identifier:str,s=Depends(service)): return s.feature_evaluations(identifier)
+
+    @api.get("/experiments/{identifier}/feature-intelligence")
+    def feature_intelligence(identifier:str,s=Depends(service)): return s.feature_intelligence(identifier)
 
     @api.get("/experiments/{identifier}/optimization")
     def optimization(identifier:str,s=Depends(service)):

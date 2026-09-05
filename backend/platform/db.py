@@ -68,11 +68,38 @@ Index("ix_spaces_workspace_id", search_spaces.c.workspace_id)
 optimization_candidates = Table("optimization_candidates", metadata,
     Column("id", String(36), primary_key=True), Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("candidate_key", String(64), nullable=False), Column("generation", Integer), Column("genome", JSON, nullable=False), Column("metrics", JSON, nullable=False), Column("fitness", Float, nullable=False), Column("pareto_rank", Integer), Column("dominance_count", Integer, nullable=False, default=0), Column("decision", String(40), nullable=False), Column("artifact_ref", Text), Column("created_at", String(40), nullable=False))
 Index("ix_candidates_experiment", optimization_candidates.c.experiment_id, optimization_candidates.c.candidate_key, unique=True)
+candidate_parents = Table("candidate_parents", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("child_id", String(36), ForeignKey("optimization_candidates.id"), nullable=False),
+    Column("parent_id", String(36), ForeignKey("optimization_candidates.id"), nullable=False),
+    Column("created_at", String(40), nullable=False))
+Index("ix_candidate_parents_child", candidate_parents.c.child_id, candidate_parents.c.parent_id, unique=True)
 feature_evaluations = Table("feature_evaluations", metadata,
     Column("id", String(36), primary_key=True), Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("feature", String(160), nullable=False), Column("ic", Float, nullable=False), Column("sign_consistency", Float, nullable=False), Column("mutual_information", Float, nullable=False), Column("missingness", Float, nullable=False), Column("selected", Integer, nullable=False), Column("created_at", String(40), nullable=False))
 feature_stability_runs = Table("feature_stability_runs", metadata,
     Column("id", String(36), primary_key=True), Column("feature_evaluation_id", String(36), ForeignKey("feature_evaluations.id"), nullable=False), Column("window_index", Integer, nullable=False), Column("rolling_ic", Float, nullable=False), Column("created_at", String(40), nullable=False))
 Index("ix_feature_evaluations_experiment", feature_evaluations.c.experiment_id, feature_evaluations.c.feature)
+feature_regime_metrics = Table("feature_regime_metrics", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("feature_evaluation_id", String(36), ForeignKey("feature_evaluations.id"), nullable=False),
+    Column("regime", Integer, nullable=False), Column("bars", Integer, nullable=False),
+    Column("share", Float, nullable=False), Column("ic", Float, nullable=False),
+    Column("created_at", String(40), nullable=False))
+Index("ix_feature_regime_evaluation", feature_regime_metrics.c.feature_evaluation_id, feature_regime_metrics.c.regime, unique=True)
+feature_selection_events = Table("feature_selection_events", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False),
+    Column("feature", String(160), nullable=False), Column("selected", Integer, nullable=False),
+    Column("selection_frequency", Float), Column("top_survival", Float),
+    Column("fitness_present", Float), Column("fitness_absent", Float),
+    Column("created_at", String(40), nullable=False))
+Index("ix_feature_selection_experiment", feature_selection_events.c.experiment_id, feature_selection_events.c.feature, unique=True)
+feature_redundancy_pairs = Table("feature_redundancy_pairs", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False),
+    Column("a", String(160), nullable=False), Column("b", String(160), nullable=False),
+    Column("correlation", Float, nullable=False), Column("created_at", String(40), nullable=False))
+Index("ix_feature_redundancy_experiment", feature_redundancy_pairs.c.experiment_id, feature_redundancy_pairs.c.a, feature_redundancy_pairs.c.b, unique=True)
 
 
 def connect(url=None):

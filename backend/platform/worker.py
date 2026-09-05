@@ -29,7 +29,7 @@ def main(run_id):
         pareto={candidate["id"] for candidate in result["optimization"]["pareto"]}
         candidates=[{**candidate,"pareto":candidate["id"] in pareto,"selected":candidate["id"]==result["optimization"]["best"]["id"]} for candidate in result["optimization"]["candidates"]]
         service.persist_candidates(item["id"],candidates,"frozen_candidate.json")
-        service.persist_feature_analysis(item["id"],result["feature_analysis"],result["selected_features"])
+        service.persist_feature_analysis(item["id"],result["feature_analysis"],result["selected_features"],result["optimization"]["survival"])
         atomic_json(folder/"result.json",result)
         service.finish(run_id,"COMPLETED","Deney tamamlandı",str((folder/"result.json").relative_to(service.storage)),result["metrics"])
     except InterruptedError:

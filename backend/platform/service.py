@@ -15,7 +15,7 @@ from sqlalchemy import select, update, func
 from sqlalchemy.exc import IntegrityError
 
 from backend.engine import read_prices, audit_calendar
-from .db import connect, migrate, snapshots, experiments, runs, events, audits, test_seals, test_access_events, research_budgets, research_trial_events, experiment_edges, search_spaces, optimization_candidates, feature_evaluations, feature_stability_runs, workspaces, ROOT, STORAGE
+from .db import connect, migrate, snapshots, experiments, runs, events, audits, test_seals, test_access_events, research_budgets, research_trial_events, experiment_edges, search_spaces, optimization_candidates, candidate_parents, feature_evaluations, feature_stability_runs, feature_regime_metrics, feature_selection_events, feature_redundancy_pairs, workspaces, ROOT, STORAGE
 from .schema import ExperimentSpec, SearchSpaceDefinition, WorkspaceCreate, WorkspacePatch, DomainError, POLICY, STAGES, TERMINAL, RESEARCH_BUDGET, check_policy, estimate_research_risk
 from .scope import workspace_scope
 from .families import family_for_column
@@ -34,6 +34,66 @@ def atomic_json(path, data):
     temporary.replace(path)
 
 
+#: Spec sections compared for lineage classification. Identity fields
+#: (name/description/tags) never create lineage semantics.
+LINEAGE_SECTIONS = ("timeframe", "features", "models", "optimization", "validation",
+                    "backtest", "seed", "regime_states", "search_space_id")
+
+
+def _changed_sections(parent_spec, child_spec):
+    return {key for key in LINEAGE_SECTIONS if parent_spec.get(key) != child_spec.get(key)}
+
+
+def _narrowed(old_items, new_items):
+    old, new = set(old_items or []), set(new_items or [])
+    return new <= old and new != old
+
+
+def classify_lineage(parent_spec, child_spec):
+    """Map a clone's spec edits to the most specific lineage relation.
+
+    Returns ``(relation_type, reason_code, change_summary)``. Seal
+    contamination (``POST_TEST_ITERATION_FROM``) is decided by the caller and
+    takes precedence. A pure clone stays ``CLONED_FROM``; a single-section
+    edit maps to its relation; mixed edits fall back to ``CLONED_FROM`` with
+    the full diff as summary.
+    """
+    changed = _changed_sections(parent_spec, child_spec)
+    summary = {key: {"from": parent_spec.get(key), "to": child_spec.get(key)} for key in sorted(changed)}
+    if not changed:
+        return "CLONED_FROM", "exact_clone", {}
+    if changed == {"features"}:
+        old, new = parent_spec.get("features") or {}, child_spec.get("features") or {}
+        reduced = (_narrowed(old.get("names"), new.get("names")) or _narrowed(old.get("groups"), new.get("groups"))
+                   or _narrowed(old.get("families"), new.get("families")))
+        expanded = (set(new.get("names") or []) - set(old.get("names") or []))
+        if reduced and not expanded:
+            removed = sorted(set(old.get("names") or []) - set(new.get("names") or []))
+            return "FEATURE_REDUCED_FROM", "feature_subset", {"features_removed": removed, **summary}
+        return "CLONED_FROM", "mixed_changes", summary
+    if changed == {"validation"}:
+        return "VALIDATION_CHANGED_FROM", "validation_changed", summary
+    if changed == {"regime_states"}:
+        return "REGIME_SPECIALIZED_FROM", "regime_states_changed", summary
+    if changed == {"models"} and _narrowed(parent_spec.get("models"), child_spec.get("models")):
+        dropped = sorted(set(parent_spec.get("models") or []) - set(child_spec.get("models") or []))
+        return "REGULARIZED_FROM", "model_subset", {"models_removed": dropped}
+    if changed == {"optimization"}:
+        old, new = parent_spec.get("optimization") or {}, child_spec.get("optimization") or {}
+        keys = {k for k in old if old.get(k) != new.get(k)} | {k for k in new if old.get(k) != new.get(k)}
+        tightening = keys <= {"max_features", "max_drawdown"} and (
+            new.get("max_features", old.get("max_features")) <= old.get("max_features", new.get("max_features"))
+            and new.get("max_drawdown", old.get("max_drawdown")) <= old.get("max_drawdown", new.get("max_drawdown"))
+            and keys != set())
+        if tightening:
+            return "REGULARIZED_FROM", "capacity_tightened", summary
+        return "AUTO_REFINED_FROM", "optimization_retuned", summary
+    if changed in ({"seed"}, {"search_space_id"}):
+        reason = "reseeded" if changed == {"seed"} else "search_space_changed"
+        return "AUTO_REFINED_FROM", reason, summary
+    return "CLONED_FROM", "mixed_changes", summary
+
+
 class ExperimentService:
     def __init__(self, dataset_loader=None, url=None, storage=None, initialize=True):
         self.storage = Path(storage or STORAGE).resolve()
@@ -43,6 +103,7 @@ class ExperimentService:
         self.stop_event = threading.Event()
         self.thread = None
         self.process = None
+        self.assistant_worker = None
         if initialize: migrate(self.engine)
 
     def _budget_usage(self, con, budget_id):
@@ -365,8 +426,12 @@ class ExperimentService:
             self._record_trial(con,"experiment_created",experiment_id=identifier,details={"risk":risk})
             if parent_id:
                 parent_seal=con.execute(select(test_seals).where(test_seals.c.test_dataset_id==snapshot["id"]).order_by(test_seals.c.epoch.desc())).mappings().first()
-                relation="POST_TEST_ITERATION_FROM" if parent_seal["access_count"] else "CLONED_FROM"
-                con.execute(experiment_edges.insert().values(from_experiment_id=parent_id,to_experiment_id=identifier,relation_type=relation,reason_code="shared_sealed_dataset",actor_type=actor.get("source","REST"),change_summary={"seal_id":parent_seal["seal_id"]},created_at=now()))
+                if parent_seal["access_count"]:
+                    relation, reason, diff = "POST_TEST_ITERATION_FROM", "shared_sealed_dataset", {}
+                else:
+                    parent_spec=con.execute(select(experiments.c.specification).where(experiments.c.id==parent_id)).mappings().first()["specification"]
+                    relation, reason, diff = classify_lineage(parent_spec, spec.model_dump())
+                con.execute(experiment_edges.insert().values(from_experiment_id=parent_id,to_experiment_id=identifier,relation_type=relation,reason_code=reason,actor_type=actor.get("source","REST"),change_summary={"seal_id":parent_seal["seal_id"],**diff},created_at=now()))
             self.audit(con,"experiment.clone" if parent_id else "experiment.create",identifier,actor,{"parent_id":parent_id,"snapshot_hash":snapshot["sha256"],"workspace_id":ws["id"]})
             self.log(con,identifier,None,"experiment.created",{"status":"DRAFT"})
         return self.get(identifier)
@@ -492,40 +557,92 @@ class ExperimentService:
     def persist_candidates(self, experiment_id, candidates, artifact_ref=None):
         pareto_ids={c["id"] for c in candidates if c.get("pareto")}
         with self.engine.begin() as con:
+            row_ids={}
             for candidate in candidates:
                 metrics=candidate["metrics"]
-                dominates=sum(1 for other in candidates if other["id"] != candidate["id"] and other["metrics"]["sharpe"] >= metrics["sharpe"] and other["metrics"]["return"] >= metrics["return"] and other["metrics"]["max_drawdown"] >= metrics["max_drawdown"] and any(other["metrics"][k] > metrics[k] for k in ("sharpe","return","max_drawdown")))
+                dominates=candidate.get("dominance_count")
+                if dominates is None:
+                    dominates=sum(1 for other in candidates if other["id"] != candidate["id"] and other["metrics"]["sharpe"] >= metrics["sharpe"] and other["metrics"]["return"] >= metrics["return"] and other["metrics"]["max_drawdown"] >= metrics["max_drawdown"] and any(other["metrics"][k] > metrics[k] for k in ("sharpe","return","max_drawdown")))
+                rank=candidate.get("pareto_rank", 0 if candidate["id"] in pareto_ids else None)
                 decision="selected" if candidate.get("selected") else ("pareto" if candidate["id"] in pareto_ids else ("rejected_constraint" if not candidate["feasible"] else "not_selected"))
-                exists=con.execute(select(optimization_candidates.c.id).where(optimization_candidates.c.experiment_id==experiment_id,optimization_candidates.c.candidate_key==candidate["id"])).first()
-                if not exists: con.execute(optimization_candidates.insert().values(id=uid(),experiment_id=experiment_id,candidate_key=candidate["id"],generation=None,genome=candidate["genome"],metrics=metrics,fitness=candidate["fitness"],pareto_rank=0 if candidate["id"] in pareto_ids else None,dominance_count=dominates,decision=decision,artifact_ref=artifact_ref,created_at=now()))
+                row=con.execute(select(optimization_candidates.c.id).where(optimization_candidates.c.experiment_id==experiment_id,optimization_candidates.c.candidate_key==candidate["id"])).first()
+                if row:
+                    row_ids[candidate["id"]]=row[0]
+                    continue
+                row_id=uid()
+                con.execute(optimization_candidates.insert().values(id=row_id,experiment_id=experiment_id,candidate_key=candidate["id"],generation=candidate.get("generation"),genome=candidate["genome"],metrics=metrics,fitness=candidate["fitness"],pareto_rank=rank,dominance_count=dominates,decision=decision,artifact_ref=artifact_ref,created_at=now()))
+                row_ids[candidate["id"]]=row_id
+            for candidate in candidates:
+                child=row_ids.get(candidate["id"])
+                if not child: continue
+                for parent_key in candidate.get("parents") or []:
+                    parent=row_ids.get(parent_key)
+                    if not parent or parent==child: continue
+                    exists=con.execute(select(candidate_parents.c.id).where(candidate_parents.c.child_id==child,candidate_parents.c.parent_id==parent)).first()
+                    if not exists: con.execute(candidate_parents.insert().values(child_id=child,parent_id=parent,created_at=now()))
+
+    @staticmethod
+    def _attach_parents(con, rows):
+        if not rows: return rows
+        parent=optimization_candidates.alias("parent")
+        edges=con.execute(select(candidate_parents.c.child_id, parent.c.candidate_key).join(parent, parent.c.id==candidate_parents.c.parent_id).where(candidate_parents.c.child_id.in_([r["id"] for r in rows]))).all()
+        by_child={}
+        for child_id, key in edges: by_child.setdefault(child_id, []).append(key)
+        for record in rows: record["parents"]=sorted(by_child.get(record["id"], []))
+        return rows
 
     def candidates(self, identifier):
         item=self.get(identifier)
-        with self.engine.connect() as con: return [dict(row) for row in con.execute(select(optimization_candidates).where(optimization_candidates.c.experiment_id==item["id"]).order_by(optimization_candidates.c.fitness.desc())).mappings()]
+        with self.engine.connect() as con: return self._attach_parents(con, [dict(row) for row in con.execute(select(optimization_candidates).where(optimization_candidates.c.experiment_id==item["id"]).order_by(optimization_candidates.c.fitness.desc())).mappings()])
 
     def candidate(self, identifier):
-        with self.engine.connect() as con: row=con.execute(select(optimization_candidates).where(optimization_candidates.c.id==identifier)).mappings().first()
-        if not row: raise DomainError("Aday bulunamadı.",404,"not_found")
-        return dict(row)
+        with self.engine.connect() as con:
+            row=con.execute(select(optimization_candidates).where(optimization_candidates.c.id==identifier)).mappings().first()
+            if not row: raise DomainError("Aday bulunamadı.",404,"not_found")
+            return self._attach_parents(con, [dict(row)])[0]
 
-    def persist_feature_analysis(self, experiment_id, analysis, selected):
+    def persist_feature_analysis(self, experiment_id, analysis, selected, survival=None):
+        survival_by_feature = {s["feature"]: s for s in (survival or [])}
         with self.engine.begin() as con:
             for item in analysis["features"]:
                 exists=con.execute(select(feature_evaluations.c.id).where(feature_evaluations.c.experiment_id==experiment_id,feature_evaluations.c.feature==item["feature"])).scalar()
-                if exists: continue
-                evaluation_id=uid()
-                con.execute(feature_evaluations.insert().values(id=evaluation_id,experiment_id=experiment_id,feature=item["feature"],ic=item["ic"],sign_consistency=item["sign_consistency"],mutual_information=item["mutual_information"],missingness=0.0,selected=int(item["feature"] in selected),created_at=now()))
-                for index, ic in enumerate(item["rolling_ic"]): con.execute(feature_stability_runs.insert().values(id=uid(),feature_evaluation_id=evaluation_id,window_index=index,rolling_ic=ic,created_at=now()))
+                if not exists:
+                    evaluation_id=uid()
+                    con.execute(feature_evaluations.insert().values(id=evaluation_id,experiment_id=experiment_id,feature=item["feature"],ic=item["ic"],sign_consistency=item["sign_consistency"],mutual_information=item["mutual_information"],missingness=float(item.get("missingness", 0.0)),selected=int(item["feature"] in selected),created_at=now()))
+                    for index, ic in enumerate(item["rolling_ic"]): con.execute(feature_stability_runs.insert().values(id=uid(),feature_evaluation_id=evaluation_id,window_index=index,rolling_ic=ic,created_at=now()))
+                    for rm in item.get("regime_metrics") or []:
+                        con.execute(feature_regime_metrics.insert().values(feature_evaluation_id=evaluation_id,regime=rm["regime"],bars=rm["bars"],share=rm["share"],ic=rm["ic"],created_at=now()))
+                stats = survival_by_feature.get(item["feature"], {})
+                if not con.execute(select(feature_selection_events.c.id).where(feature_selection_events.c.experiment_id==experiment_id,feature_selection_events.c.feature==item["feature"])).scalar():
+                    con.execute(feature_selection_events.insert().values(experiment_id=experiment_id,feature=item["feature"],selected=int(item["feature"] in selected),
+                        selection_frequency=stats.get("selection_frequency"),top_survival=stats.get("top_survival"),
+                        fitness_present=stats.get("fitness_present"),fitness_absent=stats.get("fitness_absent"),created_at=now()))
+            for pair in analysis.get("redundancy_pairs") or []:
+                if not con.execute(select(feature_redundancy_pairs.c.id).where(feature_redundancy_pairs.c.experiment_id==experiment_id,feature_redundancy_pairs.c.a==pair["a"],feature_redundancy_pairs.c.b==pair["b"])).scalar():
+                    con.execute(feature_redundancy_pairs.insert().values(experiment_id=experiment_id,a=pair["a"],b=pair["b"],correlation=pair["correlation"],created_at=now()))
 
     def feature_evaluations(self, identifier):
         item=self.get(identifier)
         with self.engine.connect() as con:
             records=[]
+            selection={row["feature"]: dict(row) for row in con.execute(select(feature_selection_events).where(feature_selection_events.c.experiment_id==item["id"])).mappings()}
             for row in con.execute(select(feature_evaluations).where(feature_evaluations.c.experiment_id==item["id"]).order_by(feature_evaluations.c.feature)).mappings():
                 value=dict(row)
                 value["stability_runs"]=[dict(r) for r in con.execute(select(feature_stability_runs).where(feature_stability_runs.c.feature_evaluation_id==value["id"]).order_by(feature_stability_runs.c.window_index)).mappings()]
+                value["regime_metrics"]=[dict(r) for r in con.execute(select(feature_regime_metrics).where(feature_regime_metrics.c.feature_evaluation_id==value["id"]).order_by(feature_regime_metrics.c.regime)).mappings()]
+                stats=selection.get(value["feature"], {})
+                value["selection_frequency"]=stats.get("selection_frequency")
+                value["top_survival"]=stats.get("top_survival")
+                value["fitness_present"]=stats.get("fitness_present")
+                value["fitness_absent"]=stats.get("fitness_absent")
                 records.append(value)
             return records
+
+    def feature_intelligence(self, identifier):
+        item=self.get(identifier)
+        with self.engine.connect() as con:
+            pairs=[dict(row) for row in con.execute(select(feature_redundancy_pairs).where(feature_redundancy_pairs.c.experiment_id==item["id"]).order_by(feature_redundancy_pairs.c.a, feature_redundancy_pairs.c.b)).mappings()]
+        return {"experiment_id":item["id"],"evaluations":self.feature_evaluations(identifier),"redundancy_pairs":pairs}
 
     def cancel(self, identifier, actor):
         item=self.get(identifier)
@@ -581,8 +698,12 @@ class ExperimentService:
         for run_id in stale: self.finish(run_id,"FAILED","Sunucu yeniden başladı; önceki çalışma kesildi. Klon ile yeniden çalıştırın.")
         self.thread=threading.Thread(target=self._loop,name="regimelab-worker-manager",daemon=True)
         self.thread.start()
+        from .assistants import AssistantWorker
+        self.assistant_worker = AssistantWorker(self)
+        self.assistant_worker.start()
 
     def close(self):
+        if self.assistant_worker: self.assistant_worker.close()
         self.stop_event.set()
         if self.thread: self.thread.join(timeout=8)
         self.engine.dispose()

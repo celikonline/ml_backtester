@@ -152,11 +152,30 @@ def fx_backtest(prediction, actual, reality, timestamps, threshold=0, high=None,
     ``spread_model="ohlc_range"`` scales the quoted spread per bar by that bar's
     high-low range relative to the window median (cost normalization only; it
     never touches signals). Without bar data it falls back to the fixed spread.
+
+    Position sizing (MVP): ``exposure = max_leverage * max_position_fraction``.
+    Market P&L, transaction costs and financing all scale linearly with
+    exposure, so ``(1, 1)`` reproduces the legacy unlevered path exactly.
+    Margin guard: a single-bar leveraged loss is floored at -100%; once equity
+    is wiped, subsequent bars stay flat (``liquidated=True``).
     """
     config = reality.model_dump() if hasattr(reality, "model_dump") else reality
     prediction, actual = np.asarray(prediction, dtype=float), np.asarray(actual, dtype=float)
     if len(prediction) != len(actual):
         raise ValueError("Tahmin ve gerçekleşen uzunluğu uyuşmuyor.")
+    try:
+        max_leverage = float(config.get("max_leverage", 1.0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_leverage sayısal olmalı.") from exc
+    try:
+        max_position_fraction = float(config.get("max_position_fraction", 1.0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_position_fraction sayısal olmalı.") from exc
+    if not 1.0 <= max_leverage <= 30.0:
+        raise ValueError("max_leverage 1 ile 30 arasında olmalı.")
+    if not 0.0 < max_position_fraction <= 1.0:
+        raise ValueError("max_position_fraction (0, 1] aralığında olmalı.")
+    exposure = max_leverage * max_position_fraction
     spread_bps = config.get("spread_bps", 0)
     fallback = False
     if config.get("spread_model", "fixed") == "ohlc_range" and high is not None and low is not None:
@@ -186,12 +205,33 @@ def fx_backtest(prediction, actual, reality, timestamps, threshold=0, high=None,
     if config.get("triple_wednesday_rollover", False):
         rate = np.where(index.dayofweek == 2, rate * 3, rate)
     financing = np.abs(signal) * elapsed_days * rate
-    ret = base - financing
+    unscaled = base - financing
+    scaled = unscaled * exposure
+    # Margin guard: floor a single bar at -100% and freeze after liquidation.
+    ret = np.empty_like(scaled)
+    margin_calls = 0
+    liquidated = False
+    for i, value in enumerate(scaled):
+        if liquidated:
+            ret[i] = 0.0
+            continue
+        if value <= -1.0:
+            ret[i] = -1.0
+            margin_calls += 1
+            liquidated = True
+        else:
+            ret[i] = float(value)
+    # Financing is reported on the unscaled notional leg; scaled P&L lives in ret.
     return ret, signal, {"one_way_cost_bps": float(one_way.mean() * 10000),
                          "avg_spread_bps": float(spread_vec.mean()),
                          "spread_model": config.get("spread_model", "fixed"),
                          "spread_fallback": bool(fallback),
-                         "financing_bps": float(financing.sum() * 10000)}
+                         "financing_bps": float(financing.sum() * exposure * 10000),
+                         "max_leverage": float(max_leverage),
+                         "max_position_fraction": float(max_position_fraction),
+                         "exposure": float(exposure),
+                         "margin_calls": int(margin_calls),
+                         "liquidated": bool(liquidated)}
 
 
 def audit_calendar(df):

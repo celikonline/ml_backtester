@@ -286,6 +286,312 @@ def test_policy_rejects_excessive_work(tmp_path):
         service.close()
 
 
+def test_pareto_ranks_form_nondominated_layers():
+    from backend.platform.research import pareto_ranks
+
+    def cand(cid, sharpe, ret, dd, feasible=True):
+        return {"id": cid, "feasible": feasible,
+                "metrics": {"sharpe": sharpe, "return": ret, "max_drawdown": dd}}
+
+    front_a = cand("a", 2.0, 0.10, -0.05)
+    front_c = cand("c", 3.0, 0.02, -0.20)  # best sharpe, worst return/drawdown: tradeoff, still front
+    second = cand("d", 1.5, 0.08, -0.06)  # dominated by "a" only
+    third = cand("b", 1.0, 0.05, -0.10)  # dominated by "a" and "d"
+    infeasible = cand("e", 9.0, 0.50, -0.01, feasible=False)
+    ranks = pareto_ranks([front_a, front_c, second, third, infeasible])
+    assert ranks["a"] == 0 and ranks["c"] == 0
+    assert ranks["d"] == 1 and ranks["b"] == 2
+    assert "e" not in ranks
+
+
+def test_optimize_tracks_generation_parents_and_ranks():
+    from backend.platform.research import optimize, pareto_front
+    df = demo_prices(700)
+    spec = make_spec("lineage", "genetic")
+    x = feature_frame(df)
+    target = (df.open.shift(-2) / df.open.shift(-1) - 1).reindex(x.index)
+    x = x.loc[target.notna()]
+    y = target.dropna().to_numpy()
+    dev_end = int(len(x) * (spec.validation.train_ratio + .15)) - spec.validation.gap
+    annual = 252 * 24 / (df.index.to_series().diff().median().total_seconds() / 3600)
+    out = optimize(x.iloc[:dev_end].copy(), y[:dev_end].copy(), spec, annual, lambda *_: None)
+    cands = out["candidates"]
+    assert cands
+    by_id = {c["id"]: c for c in cands}
+    assert all(isinstance(c["generation"], int) and c["generation"] >= 1 for c in cands)
+    assert all(set(c["parents"]) <= set(by_id) for c in cands)
+    assert all(c["parents"] == [] for c in cands if c["generation"] == 1)
+    assert any(c["generation"] > 1 and c["parents"] for c in cands)
+    front_ids = {c["id"] for c in pareto_front(cands)}
+    assert {c["id"] for c in cands if c.get("pareto_rank") == 0} == front_ids
+    assert all(c["pareto_rank"] is None for c in cands if not c["feasible"])
+    assert all(isinstance(c["dominance_count"], int) for c in cands)
+
+
+def test_candidate_parents_persisted_and_read(tmp_path):
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "parents.db").as_posix(), storage=tmp_path / "lineage")
+    service.start(); actor={"id":"tester","source":"REST"}
+    try:
+        experiment=service.create(make_spec("parents", "none"),actor)
+
+        def cand(cid, sharpe, ret, dd, feasible=True, generation=1, parents=(), pareto=False, selected=False):
+            return {"id": cid, "genome": {"mask": [True], "model": "ridge", "param": 1, "threshold": 0.0},
+                    "features": ["return_1"], "model": "ridge", "parameters": {"alpha": 10}, "threshold_bps": 0.0,
+                    "metrics": {"sharpe": sharpe, "return": ret, "max_drawdown": dd},
+                    "fitness": sharpe if feasible else -1000000, "feasible": feasible, "folds": [],
+                    "generation": generation, "parents": list(parents),
+                    "pareto_rank": 0 if pareto else None, "dominance_count": 0,
+                    "pareto": pareto, "selected": selected}
+
+        payload=[cand("a" * 16, 2.0, 0.10, -0.05, pareto=True, selected=True),
+                 cand("b" * 16, 1.0, 0.05, -0.10, generation=2, parents=["a" * 16]),
+                 cand("c" * 16, 9.0, 0.50, -0.01, feasible=False, parents=["a" * 16, "b" * 16])]
+        service.persist_candidates(experiment["id"], payload, "frozen_candidate.json")
+        rows=service.candidates(experiment["id"])
+        by_key={r["candidate_key"]: r for r in rows}
+        assert by_key["a" * 16]["generation"] == 1 and by_key["a" * 16]["pareto_rank"] == 0
+        assert by_key["a" * 16]["parents"] == [] and by_key["a" * 16]["decision"] == "selected"
+        assert by_key["b" * 16]["generation"] == 2 and by_key["b" * 16]["parents"] == ["a" * 16]
+        assert by_key["c" * 16]["decision"] == "rejected_constraint"
+        assert sorted(by_key["c" * 16]["parents"]) == ["a" * 16, "b" * 16]
+        assert service.candidate(by_key["b" * 16]["id"])["parents"] == ["a" * 16]
+        service.persist_candidates(experiment["id"], payload, "frozen_candidate.json")
+        assert len(service.candidates(experiment["id"])) == 3
+    finally:
+        service.close()
+
+
+def test_classify_lineage_maps_spec_edits_to_relations():
+    from backend.platform.service import classify_lineage
+    base = make_spec("parent", "genetic").model_dump()
+    assert classify_lineage(base, dict(base))[:2] == ("CLONED_FROM", "exact_clone")
+
+    def mutate(**overrides):
+        child = {**base, **overrides}
+        return classify_lineage(base, child)
+
+    parent_names = ["return_1", "volatility_14", "momentum_30"]
+    named = {**base, "features": {**base["features"], "names": parent_names}}
+    relation, reason, summary = classify_lineage(named, {**named, "features": {**named["features"], "names": ["return_1"]}})
+    assert (relation, reason) == ("FEATURE_REDUCED_FROM", "feature_subset")
+    assert summary["features_removed"] == ["momentum_30", "volatility_14"]
+    assert mutate(features={**base["features"], "names": ["return_1", "rsi"]})[:2] == ("CLONED_FROM", "mixed_changes")
+    assert mutate(validation={**base["validation"], "folds": 3})[:2] == ("VALIDATION_CHANGED_FROM", "validation_changed")
+    assert mutate(regime_states=4)[:2] == ("REGIME_SPECIALIZED_FROM", "regime_states_changed")
+    assert mutate(optimization={**base["optimization"], "population": 8})[:2] == ("AUTO_REFINED_FROM", "optimization_retuned")
+    wide = {**base, "models": ["ridge", "xgboost"]}
+    assert classify_lineage(wide, {**wide, "models": ["ridge"]})[:2] == ("REGULARIZED_FROM", "model_subset")
+    tightened = {**base["optimization"], "max_features": 5, "max_drawdown": 0.5}
+    assert mutate(optimization=tightened)[:2] == ("REGULARIZED_FROM", "capacity_tightened")
+    loosened = {**base["optimization"], "max_features": 20}
+    assert mutate(optimization=loosened)[:2] == ("AUTO_REFINED_FROM", "optimization_retuned")
+    assert mutate(seed=7)[:2] == ("AUTO_REFINED_FROM", "reseeded")
+    assert mutate(validation={**base["validation"], "folds": 3}, models=["random_forest"])[:2] == ("CLONED_FROM", "mixed_changes")
+
+
+def test_clone_writes_specific_lineage_relations(tmp_path):
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "lineage.db").as_posix(), storage=tmp_path / "edges")
+    service.start(); actor={"id":"tester","source":"REST"}
+    try:
+        parent_data = make_spec("edge parent", "none").model_dump()
+        parent_data["features"] = {"groups": ["technical"], "families": [], "names": ["return_1", "volatility_14", "momentum_30"]}
+        parent = service.create(parent_data, actor)
+
+        def child_spec(**overrides):
+            data = dict(parent["specification"])
+            data.update(overrides)
+            return ExperimentSpec.model_validate(data)
+
+        reduced = service.clone(parent["id"], CloneSpec(name="reduced",
+            specification=child_spec(features={"groups": ["technical"], "families": [], "names": ["return_1"]})), actor)
+        assert service.lineage(reduced["id"])[0]["relation_type"] == "FEATURE_REDUCED_FROM"
+        revalidated = service.clone(parent["id"], CloneSpec(name="revalidated",
+            specification=child_spec(validation={**parent["specification"]["validation"], "folds": 3})), actor)
+        assert service.lineage(revalidated["id"])[0]["relation_type"] == "VALIDATION_CHANGED_FROM"
+        pure = service.clone(parent["id"], CloneSpec(name="pure"), actor)
+        edge = service.lineage(pure["id"])[0]
+        assert edge["relation_type"] == "CLONED_FROM" and edge["from_experiment_id"] == parent["id"]
+        assert {e["to_experiment_id"] for e in service.lineage(parent["id"])} == {reduced["id"], revalidated["id"], pure["id"]}
+    finally:
+        service.close()
+
+
+def test_feature_analysis_reports_missingness_and_regime_metrics():
+    from backend.platform.research import feature_analysis
+    rng = np.random.default_rng(7)
+    n = 120
+    frame = pd.DataFrame({"a": rng.normal(size=n), "b": rng.normal(size=n)})
+    frame.loc[:29, "b"] = np.nan
+    missingness = {c: float(frame[c].isna().mean()) for c in frame}
+    x = frame.dropna()
+    y = (x["a"].to_numpy() * 0.001 + rng.normal(scale=0.001, size=len(x)))
+    states = np.array([0] * 60 + [1] * (len(x) - 60))
+    out = feature_analysis(x, y, 7, missingness, states, 2)
+    by_feature = {item["feature"]: item for item in out["features"]}
+    assert by_feature["a"]["missingness"] == 0.0
+    assert by_feature["b"]["missingness"] == pytest.approx(0.25)
+    for item in out["features"]:
+        assert [rm["regime"] for rm in item["regime_metrics"]] == [0, 1]
+        assert sum(rm["bars"] for rm in item["regime_metrics"]) == len(x)
+        assert sum(rm["share"] for rm in item["regime_metrics"]) == pytest.approx(1.0)
+    assert out["redundancy_pairs"] == []
+
+
+def test_feature_intelligence_persisted_and_read(tmp_path):
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "feat.db").as_posix(), storage=tmp_path / "feat")
+    service.start(); actor={"id":"tester","source":"REST"}
+    try:
+        experiment=service.create(make_spec("features", "none"),actor)
+        analysis={"scope": "development_only", "window_count": 4,
+            "features": [
+                {"feature": "return_1", "ic": 0.02, "rolling_ic": [0.01, 0.02, 0.03, 0.02],
+                 "sign_consistency": 1.0, "mutual_information": 0.001, "missingness": 0.0,
+                 "regime_metrics": [{"regime": 0, "bars": 60, "share": 0.6, "ic": 0.03},
+                                    {"regime": 1, "bars": 40, "share": 0.4, "ic": -0.01}]},
+                {"feature": "rsi", "ic": -0.01, "rolling_ic": [0.0, -0.01, -0.02, -0.01],
+                 "sign_consistency": 0.75, "mutual_information": 0.002, "missingness": 0.25,
+                 "regime_metrics": [{"regime": 0, "bars": 60, "share": 0.6, "ic": 0.0},
+                                    {"regime": 1, "bars": 40, "share": 0.4, "ic": -0.02}]},
+            ],
+            "redundancy_pairs": [{"a": "return_1", "b": "rsi", "correlation": 0.91}]}
+        survival=[{"feature": "return_1", "selection_frequency": 0.8, "top_survival": 1.0,
+                   "fitness_present": 1.5, "fitness_absent": 0.5},
+                  {"feature": "rsi", "selection_frequency": 0.2, "top_survival": 0.0,
+                   "fitness_present": 0.4, "fitness_absent": 1.2}]
+        service.persist_feature_analysis(experiment["id"], analysis, ["return_1"], survival)
+        rows={r["feature"]: r for r in service.feature_evaluations(experiment["id"])}
+        assert rows["rsi"]["missingness"] == pytest.approx(0.25) and rows["rsi"]["selected"] == 0
+        assert rows["return_1"]["selected"] == 1 and len(rows["return_1"]["stability_runs"]) == 4
+        assert [rm["regime"] for rm in rows["return_1"]["regime_metrics"]] == [0, 1]
+        assert rows["return_1"]["top_survival"] == pytest.approx(1.0)
+        assert rows["rsi"]["selection_frequency"] == pytest.approx(0.2)
+        bundle=service.feature_intelligence(experiment["id"])
+        assert bundle["experiment_id"] == experiment["id"] and len(bundle["evaluations"]) == 2
+        assert bundle["redundancy_pairs"][0]["a"] == "return_1"
+        service.persist_feature_analysis(experiment["id"], analysis, ["return_1"], survival)
+        assert len(service.feature_evaluations(experiment["id"])) == 2
+        assert len(service.feature_intelligence(experiment["id"])["redundancy_pairs"]) == 1
+    finally:
+        service.close()
+
+
+def test_optimization_constraints_are_validated():
+    from pydantic import ValidationError
+    base = make_spec("constraints", "none").model_dump()
+    base["optimization"]["min_trades"] = -1
+    with pytest.raises(ValidationError):
+        ExperimentSpec.model_validate(base)
+    base["optimization"]["min_trades"] = 0
+    base["optimization"]["max_exposure"] = 1.5
+    with pytest.raises(ValidationError):
+        ExperimentSpec.model_validate(base)
+    base["optimization"]["max_exposure"] = 0.0
+    with pytest.raises(ValidationError):
+        ExperimentSpec.model_validate(base)
+    ok = ExperimentSpec.model_validate({**base, "optimization": {**base["optimization"], "max_exposure": 0.8, "min_trades": 5}})
+    assert ok.optimization.min_trades == 5 and ok.optimization.max_exposure == 0.8
+    defaults = make_spec("defaults", "none")
+    assert defaults.optimization.min_trades == 0 and defaults.optimization.max_exposure is None
+
+
+def test_optimize_enforces_trade_and_exposure_constraints():
+    from backend.platform.research import optimize, merged_reality, OBJECTIVE_DIRECTIONS
+    df = demo_prices(700)
+    spec = make_spec("constraints", "genetic")
+    x = feature_frame(df)
+    target = (df.open.shift(-2) / df.open.shift(-1) - 1).reindex(x.index)
+    x = x.loc[target.notna()]
+    y = target.dropna().to_numpy()
+    dev_end = int(len(x) * (spec.validation.train_ratio + .15)) - spec.validation.gap
+    annual = 252 * 24 / (df.index.to_series().diff().median().total_seconds() / 3600)
+    args = (x.iloc[:dev_end].copy(), y[:dev_end].copy())
+    out = optimize(*args, spec, annual, lambda *_: None)
+    assert out["candidates"]
+    assert all(set(c["objectives"]) == set(OBJECTIVE_DIRECTIONS) for c in out["candidates"])
+    assert all(c["constraint_violations"] == [] for c in out["candidates"] if c["feasible"])
+    reality = merged_reality(spec)
+    one_way = reality.spread_bps / 2 + reality.commission_bps + reality.slippage_bps
+    first = out["candidates"][0]
+    assert first["objectives"]["cost_bps_estimate"] == pytest.approx(first["metrics"]["turnover"] * one_way)
+    assert first["objectives"]["sharpe"] == first["metrics"]["sharpe"]
+    strict_trades = spec.model_copy(update={"optimization": spec.optimization.model_copy(update={"min_trades": 10 ** 6})})
+    with pytest.raises(ValueError, match="sağlayan aday yok"):
+        optimize(*args, strict_trades, annual, lambda *_: None)
+    strict_exposure = spec.model_copy(update={"optimization": spec.optimization.model_copy(update={"max_exposure": 0.0001})})
+    with pytest.raises(ValueError, match="sağlayan aday yok"):
+        optimize(*args, strict_exposure, annual, lambda *_: None)
+    mild = spec.model_copy(update={"optimization": spec.optimization.model_copy(update={"min_trades": 1})})
+    mild_out = optimize(*args, mild, annual, lambda *_: None)
+    assert all(c["metrics"]["position_changes"] >= 1 for c in mild_out["candidates"] if c["feasible"])
+    assert all("min_trades" in c["constraint_violations"] for c in mild_out["candidates"]
+               if not c["feasible"] and c["metrics"]["position_changes"] < 1)
+
+
+def test_regime_router_reports_worst_drawdown_and_coverage():
+    from backend.platform.research import RegimeRouter
+    rng = np.random.default_rng(0)
+    n = 100
+    ret = rng.normal(0.0005, 0.002, n)
+    sig = np.array([1] * 60 + [-1] * 40)
+    states = np.array([0] * 50 + [1] * 50)
+    report = RegimeRouter(states, 2).report(ret, sig, 252 * 6)
+    assert [e["regime"] for e in report["regime_metrics"]] == [0, 1]
+    assert all(e["qualified"] for e in report["regime_metrics"])
+    assert report["regime_coverage"] == pytest.approx(1.0)
+    assert report["worst_regime_drawdown"] == min(e["max_drawdown"] for e in report["regime_metrics"])
+    sparse = RegimeRouter(np.zeros(10, dtype=int), 3).report(ret[:10], sig[:10], 252 * 6)
+    assert sparse["worst_regime_drawdown"] is None and sparse["regime_coverage"] == pytest.approx(0.0)
+
+
+def _dev_frame():
+    from backend.platform.research import feature_frame
+    df = demo_prices(700)
+    spec = make_spec("regime gate", "genetic")
+    x = feature_frame(df)
+    target = (df.open.shift(-2) / df.open.shift(-1) - 1).reindex(x.index)
+    x = x.loc[target.notna()]
+    y = target.dropna().to_numpy()
+    dev_end = int(len(x) * (spec.validation.train_ratio + .15)) - spec.validation.gap
+    annual = 252 * 24 / (df.index.to_series().diff().median().total_seconds() / 3600)
+    return spec, x.iloc[:dev_end].copy(), y[:dev_end].copy(), annual
+
+
+def test_optimize_worst_regime_gate():
+    from pydantic import ValidationError
+    from backend.platform.research import optimize, RegimeRouter
+    spec, x_dev, y_dev, annual = _dev_frame()
+    states = np.zeros(len(x_dev), dtype=int)
+    states[len(x_dev) // 2:] = 1
+    router = RegimeRouter(states, 2)
+    assert spec.optimization.max_worst_regime_drawdown is None
+    out = optimize(x_dev, y_dev, spec, annual, lambda *_: None, None, router)
+    assert out["candidates"]
+    assert all("worst_regime_drawdown" not in c["constraint_violations"] for c in out["candidates"])
+    assert all(len(c["regime_metrics"]) == 2 and c["regime_coverage"] == pytest.approx(1.0) for c in out["candidates"])
+    bad = dict(spec.model_dump()["optimization"])
+    bad["max_worst_regime_drawdown"] = 1.5
+    with pytest.raises(ValidationError):
+        ExperimentSpec.model_validate({**spec.model_dump(), "optimization": bad})
+    impossible = spec.model_copy(update={"optimization": spec.optimization.model_copy(update={"max_worst_regime_drawdown": 0.0001})})
+    with pytest.raises(ValueError, match="sağlayan aday yok"):
+        optimize(x_dev, y_dev, impossible, annual, lambda *_: None, None, router)
+    mild = spec.model_copy(update={"optimization": spec.optimization.model_copy(update={"max_worst_regime_drawdown": 0.03})})
+    mild_out = optimize(x_dev, y_dev, mild, annual, lambda *_: None, None, router)
+    assert all(c["worst_regime_drawdown"] is not None and c["worst_regime_drawdown"] >= -0.03
+               for c in mild_out["candidates"] if c["feasible"])
+    assert all("worst_regime_drawdown" in c["constraint_violations"] for c in mild_out["candidates"]
+               if not c["feasible"] and (c["worst_regime_drawdown"] is None or c["worst_regime_drawdown"] < -0.03))
+
+
+def test_execute_research_reports_candidate_regimes(tmp_path):
+    from backend.platform.research import execute_research
+    df = demo_prices(700)
+    result = execute_research(df, make_spec("regime e2e", "none"), lambda *_: None, tmp_path)
+    best = result["optimization"]["best"]
+    assert len(best["regime_metrics"]) == 3
+    assert best["worst_regime_drawdown"] is not None and best["regime_coverage"] == pytest.approx(1.0)
+
+
 def test_versioned_search_space_and_durable_candidate_registry(tmp_path):
     service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "x.db").as_posix(), storage=tmp_path / "a")
     service.start(); actor={"id":"tester","source":"REST"}

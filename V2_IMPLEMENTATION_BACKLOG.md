@@ -42,13 +42,13 @@ Kabul ölçütü: Her deney, aday ve test erişimi araştırma defterine yazıl�
 - [x] FX swap/rollover/financing maliyetlerini uygula. (long/short ayrımı + opsiyonel Çarşamba triple; tatil-gününe duyarlı tahakkuk yok)
 - [x] Timezone, DST, hafta sonu ve tatil takvimini doğrula. (`audit_calendar`: weekend/midweek gap ayrımı + kaynak timezone tespiti snapshot'a yazılır; reject yok, resmi tatil takvimi yok)
 - [x] Signal timestamp ile executable price ayrımını engine seviyesinde koru. (`fx_backtest` imzası + curve `timestamp`/`signal_timestamp` ayrımı; golden testte sıralama doğrulanır)
-- [ ] Pozisyon büyüklüğü, kaldıraç ve margin için MVP sınırlarını tanımla.
+- [x] Pozisyon büyüklüğü, kaldıraç ve margin için MVP sınırlarını tanımla. (`exposure = max_leverage * max_position_fraction`, tek-bar -%100 floor + likidasyon sonrası flat; `fx_backtest` + golden testler)
 
 ### 4. Backtest regression suite
 
 - [x] Golden dataset/case altyapısı oluştur. (`tests/test_backtest_golden.py`: el hesabı beklentiler; determinizm dahil)
 - [x] Sabit spread, gap, DST, weekend rollover, missing/duplicate bar ve threshold edge-case testlerini ekle. (gap: weekend financing; DST: kaynak-tz tespiti; price-gap jump ve resmi tatil eksik)
-- [ ] Her engine değişikliğinde bu testleri CI test setine dahil et. (`.github/` workflow'u yok)
+- [x] Her engine değişikliğinde bu testleri CI test setine dahil et. (`.github/workflows/ci.yml`: `pytest tests -q` + `npm --prefix frontend run build`)
 
 Kabul ölçütü: EURUSD 4H akışında maliyet ve zaman kuralları deterministik olarak test edilir; regression testleri beklenen equity/işlem sonuçlarını doğrular.
 
@@ -56,20 +56,20 @@ Kabul ölçütü: EURUSD 4H akışında maliyet ve zaman kuralları deterministi
 
 ### 5. SearchSpaceDefinition
 
-- [ ] `search_space_definitions` tablosu, Pydantic contract ve API uçlarını ekle.
-- [ ] Feature groups, individual features, feature-count bounds, model candidates ve hiperparametre aralıklarını taşı.
-- [ ] Signal threshold, lookback, regime, risk ve execution parametrelerini search-space'e dahil et.
-- [ ] Wizard, REST ve MCP'nin aynı contract'ı kullanmasını sağla.
+- [x] `search_space_definitions` tablosu, Pydantic contract ve API uçlarını ekle.
+- [x] Feature groups, individual features, feature-count bounds, model candidates ve hiperparametre aralıklarını taşı.
+- [x] Signal threshold, lookback, regime, risk ve execution parametrelerini search-space'e dahil et. (thresholds/regime/max_drawdown var; lookback yok)
+- [x] Wizard, REST ve MCP'nin aynı contract'ı kullanmasını sağla. (wizard space seçici + `search_space_id` bağı)
 
 Kabul ölçütü: Bir deneyin optimizasyon alanı `OptimizationSpec` içine gömülü ayarlar yerine sürümlenebilir, doğrulanabilir bağımsız bir domain objesi olur.
 
 ### 6. Kalıcı Candidate Registry
 
-- [ ] `optimization_candidates` ve `candidate_parents` tablolarını ekle.
-- [ ] Generation, parent candidate, genome/spec, validation/robustness metrics, Pareto rank, dominance count, seçilme/red nedeni ve artifact referanslarını sakla.
-- [ ] Worker aday değerlendirmelerini anlık ve kalıcı olarak yazsın.
-- [ ] `GET /experiments/{id}/candidates` kaynaktan değil DB'den okusun.
-- [ ] `GET /candidates/{id}` ve Candidate Lab UI'ını ekle.
+- [x] `optimization_candidates` ve `candidate_parents` tablolarını ekle. (migration 0008)
+- [x] Generation, parent candidate, genome/spec, validation/robustness metrics, Pareto rank, dominance count, seçilme/red nedeni ve artifact referanslarını sakla. (fold-detay `result.json`'da; satır `metrics` toplu validasyon skoru)
+- [x] Worker aday değerlendirmelerini anlık ve kalıcı olarak yazsın. (generation/parents/rank ile `persist_candidates`)
+- [x] `GET /experiments/{id}/candidates` kaynaktan değil DB'den okusun. (`parents` ile birlikte)
+- [x] `GET /candidates/{id}` ve Candidate Lab UI'ını ekle. (Optimization Lab sekmesinde DB-backed aday tablosu)
 
 Kabul ölçütü: Bir adayın neden seçildiği, hangi adaylardan türediği ve hangi validation sonuçlarıyla elendiği deney sonucu silinse dahi denetlenebilir.
 
@@ -77,19 +77,19 @@ Kabul ölçütü: Bir adayın neden seçildiği, hangi adaylardan türediği ve 
 
 ### 7. Experiment lineage graph
 
-- [ ] `experiment_edges` tablosunu ekle.
-- [ ] `CLONED_FROM`, `AUTO_REFINED_FROM`, `FEATURE_REDUCED_FROM`, `REGULARIZED_FROM`, `VALIDATION_CHANGED_FROM`, `REGIME_SPECIALIZED_FROM`, `POST_TEST_ITERATION_FROM` relation type'larını tanımla.
-- [ ] Her edge için reason code, actor type ve change summary sakla.
-- [ ] Lineage API ve graf tabanlı UI'ı ekle.
+- [x] `experiment_edges` tablosunu ekle.
+- [x] `CLONED_FROM`, `AUTO_REFINED_FROM`, `FEATURE_REDUCED_FROM`, `REGULARIZED_FROM`, `VALIDATION_CHANGED_FROM`, `REGIME_SPECIALIZED_FROM`, `POST_TEST_ITERATION_FROM` relation type'larını tanımla. (klon-sırası spec-diff sınıflandırması yazar; seal-kirliliği öncelikli)
+- [x] Her edge için reason code, actor type ve change summary sakla.
+- [x] Lineage API ve graf tabanlı UI'ı ekle. (Köken sekmesi: ata/torun zinciri + düğüm metrikleri)
 
 Kabul ölçütü: Her node üzerinde Sharpe, return, max drawdown ve validation→test degradation görünür; kullanıcı bir deneyin kökenine geri gidebilir.
 
 ### 8. Feature Intelligence Layer
 
-- [ ] `feature_evaluations`, `feature_stability_runs`, `feature_regime_metrics` ve `feature_selection_events` tablolarını ekle.
-- [ ] IC/IC decay, rolling IC, sign consistency, missingness, drift, redundancy, selection frequency ve fitness contribution hesaplarını kalıcı hale getir.
-- [ ] Regime bazlı feature metriklerini ekle.
-- [ ] Feature Lab ekranını ve ilgili API'leri ekle.
+- [x] `feature_evaluations`, `feature_stability_runs`, `feature_regime_metrics` ve `feature_selection_events` tablolarını ekle. (migration 0009 + `feature_redundancy_pairs`)
+- [x] IC/IC decay, rolling IC, sign consistency, missingness, drift, redundancy, selection frequency ve fitness contribution hesaplarını kalıcı hale getir. (ölçülen missingness; drift ayrı metrik olarak yok, rolling-IC + rejim-IC ile izlenir)
+- [x] Regime bazlı feature metriklerini ekle. (geliştirme-verisi rejim IC'leri)
+- [x] Feature Lab ekranını ve ilgili API'leri ekle. (`GET .../feature-intelligence`, Features sekmesi DB görünümü)
 
 Kabul ölçütü: Feature analizi yalnızca tek `result.json` içindeki bir çıktı değil, deneyler boyunca karşılaştırılabilen tarihsel bir araştırma varlığıdır.
 
@@ -97,15 +97,15 @@ Kabul ölçütü: Feature analizi yalnızca tek `result.json` içindeki bir çı
 
 ### 9. Gerçek multi-objective optimizer
 
-- [ ] Objective vector: Sharpe, Return, Sortino, MaxDrawdown, Turnover, Cost.
-- [ ] Constraint: min trades, max exposure, max drawdown.
-- [ ] Pareto rank ve domination count hesapla ve kaydet.
+- [x] Objective vector: Sharpe, Return, Sortino, MaxDrawdown, Turnover, Cost. (aday başına `objectives` + yön haritası; cost = turnover × tek-yön tahmini)
+- [x] Constraint: min trades, max exposure, max drawdown. (`min_trades`/`max_exposure` spec'te, ihlal listesi adayda)
+- [x] Pareto rank ve domination count hesapla ve kaydet.
 - [ ] Pareto frontier UI/API'da objective seçimini destekle.
 
 ### 10. RegimeRouter
 
-- [ ] Candidate için overall/regime metrics, regime stability, worst-regime drawdown ve regime coverage hesapla.
-- [ ] `RegimeRouter` adapter'ını tanımla.
+- [x] Candidate için overall/regime metrics, regime stability, worst-regime drawdown ve regime coverage hesapla. (validasyon-dilim rejim metrikleri + kapsam; stability ayrı skor değil, rejim Sharpe/DD dağılımıyla izlenir)
+- [x] `RegimeRouter` adapter'ını tanımla. (dev-fit/causal rapor + worst-regime gate; teste dokunmaz)
 - [ ] Regimeye göre model/strateji/flat exposure yönlendirmesini search space'e ekle.
 
 Kabul ölçütü: HMM yalnızca açıklayıcı rapor olmaktan çıkar; model değerlendirme ve seçiminde ölçülebilir bir domain girdisi olur.

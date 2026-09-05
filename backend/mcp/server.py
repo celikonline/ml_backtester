@@ -133,6 +133,10 @@ async def get_feature_analysis(experiment_id:str)->dict:
     return await call("GET",f"/experiments/{experiment_id}/feature-analysis")
 
 @mcp.tool()
+async def get_feature_intelligence(experiment_id:str)->dict:
+    return await call("GET",f"/experiments/{experiment_id}/feature-intelligence")
+
+@mcp.tool()
 async def get_backtest_results(experiment_id:str)->dict:
     return await call("GET",f"/experiments/{experiment_id}/backtest")
 

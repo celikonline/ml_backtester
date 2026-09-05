@@ -123,6 +123,92 @@ def test_read_prices_records_source_timezone():
     assert read_prices(naive.to_csv(index=False).encode()).attrs["source_timezone"] == "naive-assumed-UTC"
 
 
+def test_leverage_scales_pnl_and_costs_linearly():
+    ts = hours("2024-01-02T00:00", "2024-01-02T01:00")
+    # signal [1, 1], turnover [1, 1] with final exit; spread 2 bps -> one-way 1 bp.
+    base_cfg = {"spread_bps": 2.0, "commission_bps": 0.0, "slippage_bps": 0.0,
+                "rollover_bps_per_day": 0.0}
+    unscaled, _, _ = fx_backtest([1, 1], [0.001, 0.002], reality(**base_cfg), ts)
+    assert unscaled.tolist() == pytest.approx([0.001 - 0.0001, 0.002 - 0.0001])
+    # exposure = 3 * 1 = 3
+    ret, signal, summary = fx_backtest(
+        [1, 1], [0.001, 0.002],
+        reality(max_leverage=3.0, **base_cfg), ts)
+    assert signal.tolist() == [1, 1]
+    assert ret.tolist() == pytest.approx([v * 3.0 for v in unscaled])
+    assert summary["exposure"] == pytest.approx(3.0)
+    assert summary["max_leverage"] == pytest.approx(3.0)
+    assert summary["margin_calls"] == 0 and summary["liquidated"] is False
+    # exposure = 4 * 0.5 = 2
+    ret2, _, summary2 = fx_backtest(
+        [1, 1], [0.001, 0.002],
+        reality(max_leverage=4.0, max_position_fraction=0.5, **base_cfg), ts)
+    assert ret2.tolist() == pytest.approx([v * 2.0 for v in unscaled])
+    assert summary2["exposure"] == pytest.approx(2.0)
+
+
+def test_leverage_scales_financing():
+    ts = hours("2024-01-05T20:00", "2024-01-08T00:00")  # 52-hour weekend gap
+    ret, _, summary = fx_backtest([1, 1], [0, 0],
+                                  reality(rollover_bps_per_day=2, max_leverage=2.0), ts)
+    # unscaled financing 52/24*2 bps, scaled by exposure 2
+    assert ret.tolist() == pytest.approx([0.0, -(52 / 24 * 2 * 2) / 10000])
+    assert summary["financing_bps"] == pytest.approx(52 / 24 * 2 * 2)
+    assert summary["exposure"] == pytest.approx(2.0)
+
+
+def test_margin_guard_floors_and_freezes_after_liquidation():
+    ts = hours("2024-01-02T00:00", "2024-01-02T01:00", "2024-01-02T02:00")
+    # exposure 30; first bar -0.04 * 30 = -1.2 -> floored to -1.0, then flat.
+    ret, signal, summary = fx_backtest([1, 1, 1], [-0.04, 0.01, 0.01],
+                                       reality(max_leverage=30.0), ts)
+    assert signal.tolist() == [1, 1, 1]
+    assert ret.tolist() == pytest.approx([-1.0, 0.0, 0.0])
+    assert summary["margin_calls"] == 1 and summary["liquidated"] is True
+    # equity path: 1.0 -> 0.0 -> 0.0 (never negative, never recovers)
+    equity = np.cumprod(1 + np.asarray(ret))
+    assert equity.tolist() == pytest.approx([0.0, 0.0, 0.0])
+
+
+def test_default_exposure_preserves_legacy_path():
+    ts = hours("2024-01-02T00:00", "2024-01-02T01:00")
+    _, _, summary = fx_backtest([1, -1], [0.001, 0.001], reality(spread_bps=2), ts)
+    assert summary["exposure"] == pytest.approx(1.0)
+    assert summary["margin_calls"] == 0 and summary["liquidated"] is False
+
+
+def test_leverage_inputs_are_guarded():
+    ts = hours("2024-01-02T00:00", "2024-01-02T01:00")
+    with pytest.raises(ValueError, match="max_leverage"):
+        fx_backtest([1, 1], [0.001, 0.001], {"max_leverage": 31.0}, ts)
+    with pytest.raises(ValueError, match="max_leverage"):
+        fx_backtest([1, 1], [0.001, 0.001], {"max_leverage": 0.5}, ts)
+    with pytest.raises(ValueError, match="max_position_fraction"):
+        fx_backtest([1, 1], [0.001, 0.001], {"max_position_fraction": 0.0}, ts)
+    with pytest.raises(ValueError, match="max_position_fraction"):
+        fx_backtest([1, 1], [0.001, 0.001], {"max_position_fraction": 1.5}, ts)
+
+
+def test_merged_reality_carries_leverage_and_honors_legacy_top_level():
+    from backend.platform.research import merged_reality
+    legacy = ExperimentSpec.model_validate({
+        "name": "legacy leverage", "dataset_id": "demo", "models": ["ridge"],
+        "backtest": {"capital": 10000, "max_leverage": 5.0,
+                     "reality": {"spread_bps": 0.0}},
+    })
+    assert merged_reality(legacy).max_leverage == pytest.approx(5.0)
+    assert merged_reality(legacy).max_position_fraction == pytest.approx(1.0)
+    explicit = ExperimentSpec.model_validate({
+        "name": "explicit reality", "dataset_id": "demo", "models": ["ridge"],
+        "backtest": {"capital": 10000, "max_leverage": 5.0,
+                     "reality": {"spread_bps": 0.0, "max_leverage": 3.0,
+                                 "max_position_fraction": 0.5}},
+    })
+    merged = merged_reality(explicit)
+    assert merged.max_leverage == pytest.approx(3.0)
+    assert merged.max_position_fraction == pytest.approx(0.5)
+
+
 def test_validation_and_final_test_share_reality_model(tmp_path):
     df = demo_prices(700)
     spec = ExperimentSpec.model_validate({
