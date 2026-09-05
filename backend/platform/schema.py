@@ -110,6 +110,8 @@ class ExperimentSpec(Contract):
             raise ValueError("Model listesinde tekrar var.")
         if not self.name.strip():
             raise ValueError("Deney adı boş olamaz.")
+        from .models import require_available
+        require_available(self.models)
         return self
 
 

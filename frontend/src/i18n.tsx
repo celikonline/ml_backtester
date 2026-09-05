@@ -390,6 +390,8 @@ const dict: Dict = {
   'rp.poolNote': { tr: 'kullanılabilir özellikten seçim yapılır. Harici seriler her zaman bir bar gecikmeli hesaplanır.', en: 'available features will be searched. External series are always computed with a one-bar lag.' },
   'rp.noManual': { tr: 'Elle seçim yapmazsanız', en: 'If you select nothing manually,' },
   'rp.useAll': { tr: 'Tüm özellikleri kullan', en: 'Use all features' },
+  'rp.requiresPackage': { tr: 'Bu dağıtımda kurulu değil', en: 'Not installed in this deployment' },
+  'rp.noAvailableModel': { tr: 'Seçili modeller bu ortamda kurulu değil. Kullanılabilir bir model seçin.', en: 'Selected models are not installed in this environment. Pick an available model.' },
   'rp.bestVal': { tr: 'En iyi aday doğrulamada seçilir. Test yalnızca sabitlenen aday için açılır.', en: 'The best candidate is picked on validation. Test opens only for the frozen candidate.' },
   'rp.retReg': { tr: 'Getiri regresyonu · CPU', en: 'Return regression · CPU' },
   'rp.optimizer': { tr: 'Optimizer', en: 'Optimizer' },

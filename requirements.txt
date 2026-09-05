@@ -1,16 +1,14 @@
+# Production runtime dependencies.
+# This file is what Vercel installs for the serverless function, so it must
+# stay minimal: every package here counts against the 500 MB function bundle
+# limit. Do NOT add dev/test tools, the MCP server, database drivers for
+# optional backends, or the heavy optional gradient-boosting packages here.
 fastapi>=0.115,<1
-uvicorn>=0.34,<1
 python-multipart>=0.0.20,<1
 pandas>=2.2,<3
 numpy>=2.1,<3
 scikit-learn>=1.6,<2
 hmmlearn==0.3.3
 threadpoolctl>=3.5,<4
-pytest>=8,<10
-httpx>=0.28,<1
 sqlalchemy>=2.0,<3
 alembic>=1.16,<2
-psycopg[binary]>=3.2,<4
-xgboost>=3,<4
-lightgbm>=4,<5
-mcp>=1.12,<2

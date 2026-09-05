@@ -6,5 +6,6 @@ __pycache__/
 data/
 *.log
 *.tsbuildinfo
+opencode.json
 
 .vercel

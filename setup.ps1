@@ -7,7 +7,7 @@ if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
     & $Python -m venv .venv
     if ($LASTEXITCODE -ne 0) { throw 'Sanal ortam olusturulamadi.' }
 }
-& '.\.venv\Scripts\python.exe' -m pip install -r requirements.lock.txt
+& '.\.venv\Scripts\python.exe' -m pip install -r requirements-dev.txt
 if ($LASTEXITCODE -ne 0) { throw 'Python bagimliliklari kurulamadi.' }
 Push-Location (Join-Path $PSScriptRoot 'frontend')
 try {

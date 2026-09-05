@@ -74,6 +74,7 @@ EXACT = {
 PREFIX = {
     "Eksik sütunlar:": "Missing columns:",
     "Hesaplama sınırı:": "Compute limit:",
+    "Bu ortamda kurulu olmayan model istendi:": "Requested model is not installed in this environment:",
 }
 
 
