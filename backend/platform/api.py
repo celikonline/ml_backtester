@@ -265,12 +265,11 @@ def router(dataset_loader, datasets_list):
     @api.get("/activity")
     def activity(page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=500), s=Depends(service)):
         with s.engine.connect() as con:
-            total = con.execute(select(audits.c.id).order_by(audits.c.id.desc())).scalar()
-            total = con.execute(select(func.count()).select_from(audits)).scalar() if total is None else 1  # fallback
+            total = con.execute(select(func.count()).select_from(audits)).scalar()
         offset = (page - 1) * page_size
         with s.engine.connect() as con:
             rows = con.execute(select(audits).order_by(audits.c.id.desc()).limit(page_size).offset(offset)).mappings().all()
-        return {"page": page, "page_size": page_size, "total": total, "items": [dict(r) for r in rows]}
+        return {"page": page, "page_size": page_size, "total": total or 0, "items": [dict(r) for r in rows]}
 
     # ── Notebook Lab ──────────────────────────────────────────────────────────
 

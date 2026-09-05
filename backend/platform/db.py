@@ -172,6 +172,48 @@ workspace_secrets = Table("workspace_secrets", metadata,
 UniqueConstraint("workspace_id", "key_name", name="uq_workspace_secrets")
 Index("ix_workspace_secrets_workspace", workspace_secrets.c.workspace_id)
 
+# ── Authentication Tables ─────────────────────────────────────────────────────
+auth_users = Table(
+    "auth_users",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("email", String(256), unique=True, nullable=False, index=True),
+    Column("password_hash", String(128), nullable=False),
+    Column("password_salt", String(32), nullable=False),
+    Column("name", String(120), nullable=False),
+    Column("role", String(32), nullable=False, default="user"),
+    Column("is_active", Integer, nullable=False, default=1),
+    Column("created_at", String(40), nullable=False),
+    Column("last_login_at", String(40), nullable=True),
+    Column("features", JSON, nullable=False, default=dict),
+    Column("workspace_id", String(36), ForeignKey("workspaces.id"), nullable=True),
+)
+Index("ix_auth_users_workspace", auth_users.c.workspace_id)
+
+auth_tokens = Table(
+    "auth_tokens",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("user_id", String(36), ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=False),
+    Column("token_hash", String(128), nullable=False, unique=True),
+    Column("issued_at", String(40), nullable=False),
+    Column("expires_at", String(40), nullable=False),
+    Column("revoked", Integer, nullable=False, default=0),
+    Column("user_agent", String(256), nullable=True),
+)
+Index("ix_auth_tokens_user", auth_tokens.c.user_id)
+Index("ix_auth_tokens_expires", auth_tokens.c.expires_at)
+
+workspace_partners = Table(
+    "workspace_partners",
+    metadata,
+    Column("workspace_id", String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+    Column("user_id", String(36), ForeignKey("auth_users.id", ondelete="CASCADE"), nullable=False),
+    Column("role", String(32), nullable=False, server_default="member"),
+    Column("created_at", String(40), nullable=False),
+    PrimaryKeyConstraint("workspace_id", "user_id"),
+)
+
 
 def connect(url=None):
     url = url or os.environ.get("REGIMELAB_DATABASE_URL", DEFAULT_URL)

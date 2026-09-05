@@ -1,3 +1,5 @@
+:root{--color-emerald:#55dfb0;--color-sky:#62b5ef;--color-amber:#deb577;--color-rose:#ef8f93;--color-muted:#7e899b}
+:root[data-theme='light']{--color-emerald:#168a66;--color-sky:#2f7bb6;--color-amber:#b07d2a;--color-rose:#c2555f;--color-muted:#64748b}
 .nb-lab{min-width:0}
 .nb-header{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:20px;flex-wrap:wrap}
 .nb-header-left{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
