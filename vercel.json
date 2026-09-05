@@ -7,8 +7,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 60,
-      "memory": 2048,
-      "excludeFiles": "{tests/**,*.ipynb,data/**,*.md,frontend/src/**,frontend/node_modules/**,.venv/**}"
+      "memory": 2048
     }
   },
   "rewrites": [

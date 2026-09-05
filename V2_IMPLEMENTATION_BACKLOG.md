@@ -37,18 +37,18 @@ Kabul ölçütü: Her deney, aday ve test erişimi araştırma defterine yazıl�
 
 ### 3. Backtest reality contract ve engine
 
-- [ ] `BacktestRealityConfig` şemasını ekle.
-- [ ] Sabit/değişken bid-ask spread, komisyon ve slippage modellerini uygula.
-- [ ] FX swap/rollover/financing maliyetlerini uygula.
-- [ ] Timezone, DST, hafta sonu ve tatil takvimini doğrula.
-- [ ] Signal timestamp ile executable price ayrımını engine seviyesinde koru.
+- [x] `BacktestRealityConfig` şemasını ekle. (fixed/ohlc_range spread, komisyon, slippage, flat+long/short rollover, Wed triple; fill/latency/stop modelleri yok)
+- [x] Sabit/değişken bid-ask spread, komisyon ve slippage modellerini uygula. (validasyon ve final test aynı `merged_reality` yolunu kullanır; `tests/test_backtest_golden.py`)
+- [x] FX swap/rollover/financing maliyetlerini uygula. (long/short ayrımı + opsiyonel Çarşamba triple; tatil-gününe duyarlı tahakkuk yok)
+- [x] Timezone, DST, hafta sonu ve tatil takvimini doğrula. (`audit_calendar`: weekend/midweek gap ayrımı + kaynak timezone tespiti snapshot'a yazılır; reject yok, resmi tatil takvimi yok)
+- [x] Signal timestamp ile executable price ayrımını engine seviyesinde koru. (`fx_backtest` imzası + curve `timestamp`/`signal_timestamp` ayrımı; golden testte sıralama doğrulanır)
 - [ ] Pozisyon büyüklüğü, kaldıraç ve margin için MVP sınırlarını tanımla.
 
 ### 4. Backtest regression suite
 
-- [ ] Golden dataset/case altyapısı oluştur.
-- [ ] Sabit spread, gap, DST, weekend rollover, missing/duplicate bar ve threshold edge-case testlerini ekle.
-- [ ] Her engine değişikliğinde bu testleri CI test setine dahil et.
+- [x] Golden dataset/case altyapısı oluştur. (`tests/test_backtest_golden.py`: el hesabı beklentiler; determinizm dahil)
+- [x] Sabit spread, gap, DST, weekend rollover, missing/duplicate bar ve threshold edge-case testlerini ekle. (gap: weekend financing; DST: kaynak-tz tespiti; price-gap jump ve resmi tatil eksik)
+- [ ] Her engine değişikliğinde bu testleri CI test setine dahil et. (`.github/` workflow'u yok)
 
 Kabul ölçütü: EURUSD 4H akışında maliyet ve zaman kuralları deterministik olarak test edilir; regression testleri beklenen equity/işlem sonuçlarını doğrular.
 

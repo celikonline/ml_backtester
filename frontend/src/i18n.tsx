@@ -421,8 +421,6 @@ const dict: Dict = {
   'rp.ev.sealed_test_opened': { tr: 'Sealed test açıldı', en: 'Sealed test opened' },
   'rp.ev.seal_invalidated': { tr: 'Seal geçersiz kılındı', en: 'Seal invalidated' },
   'rp.ev.seal_rotated': { tr: 'Seal epoch açıldı', en: 'Seal epoch opened' },
-  'rp.requiresPackage': { tr: 'Bu dağıtımda kurulu değil', en: 'Not installed in this deployment' },
-  'rp.noAvailableModel': { tr: 'Seçili modeller bu ortamda kurulu değil. Kullanılabilir bir model seçin.', en: 'Selected models are not installed in this environment. Pick an available model.' },
   'rp.bestVal': { tr: 'En iyi aday doğrulamada seçilir. Test yalnızca sabitlenen aday için açılır.', en: 'The best candidate is picked on validation. Test opens only for the frozen candidate.' },
   'rp.retReg': { tr: 'Getiri regresyonu · CPU', en: 'Return regression · CPU' },
   'rp.optimizer': { tr: 'Optimizer', en: 'Optimizer' },

@@ -1,7 +1,4 @@
 """Model adapters share fit/predict/save; no orchestration-specific branching."""
-import importlib.util
-from functools import lru_cache
-
 import joblib
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -16,33 +13,6 @@ MODEL_REGISTRY = {
     "lightgbm": {"name": "LightGBM", "parameters": [{"num_leaves": n, "learning_rate": .05} for n in [7, 15, 31]]},
 }
 
-# Model id -> importable distribution name. Models without an entry use only
-# the always-installed scikit-learn stack. Heavy optional packages (XGBoost,
-# LightGBM) are excluded from slim deployments (e.g. Vercel) to stay under
-# the serverless function bundle limit.
-OPTIONAL_PACKAGES = {"xgboost": "xgboost", "lightgbm": "lightgbm"}
-
-
-@lru_cache(maxsize=None)
-def is_available(model_id: str) -> bool:
-    package = OPTIONAL_PACKAGES.get(model_id)
-    if package is None:
-        return True
-    return importlib.util.find_spec(package) is not None
-
-
-def available_registry() -> dict:
-    return {k: v for k, v in MODEL_REGISTRY.items() if is_available(k)}
-
-
-def require_available(model_ids) -> None:
-    missing = sorted({m for m in model_ids if m in MODEL_REGISTRY and not is_available(m)})
-    if missing:
-        from .schema import DomainError
-        raise DomainError(
-            "Bu ortamda kurulu olmayan model istendi: " + ", ".join(missing)
-            + ". requirements-dev.txt ile tam kurulum yapın veya kullanılabilir modelleri seçin.",
-            422, "model_unavailable")
 
 class ModelAdapter:
     def __init__(self, model_id, params, seed):
@@ -54,18 +24,10 @@ class ModelAdapter:
         elif model_id == "hist_gradient_boosting":
             self.model = HistGradientBoostingRegressor(**params, max_iter=60, max_leaf_nodes=12, early_stopping=False, random_state=seed)
         elif model_id == "xgboost":
-            try:
-                from xgboost import XGBRegressor
-            except ImportError:
-                require_available([model_id])
-                raise
+            from xgboost import XGBRegressor
             self.model = XGBRegressor(**params, n_estimators=60, reg_lambda=5, random_state=seed, n_jobs=2, tree_method="hist")
         elif model_id == "lightgbm":
-            try:
-                from lightgbm import LGBMRegressor
-            except ImportError:
-                require_available([model_id])
-                raise
+            from lightgbm import LGBMRegressor
             self.model = LGBMRegressor(**params, n_estimators=60, random_state=seed, n_jobs=2, verbosity=-1, deterministic=True, force_col_wise=True)
         else:
             raise ValueError("Desteklenmeyen model adapter'ı.")

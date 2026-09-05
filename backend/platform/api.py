@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from .schema import ExperimentSpec, SearchSpaceDefinition, WorkspaceCreate, WorkspacePatch, CloneSpec, CompareSpec, DomainError, POLICY, TERMINAL
 from .service import ExperimentService
-from .models import MODEL_REGISTRY, is_available
+from .models import MODEL_REGISTRY
 from .research import registry
 from .families import family_registry
 from .db import audits
@@ -50,7 +50,7 @@ def router(dataset_loader, datasets_list):
 
     @api.get("/capabilities")
     def capabilities():
-        return {"schema_version":"1.0","models":[{"id":k,**v,"status":"implemented" if is_available(k) else "requires_package"} for k,v in MODEL_REGISTRY.items()],
+        return {"schema_version":"1.0","models":[{"id":k,**v,"status":"implemented"} for k,v in MODEL_REGISTRY.items()],
             "policy":POLICY,"auth_mode":"api_key" if os.environ.get("REGIMELAB_API_KEY") else "local_single_user",
             "unavailable":[{"name":n,"status":"requires_data"} for n in ["ALFRED / vintage macro","FX IV surface","OIS / forward points","Order flow / microstructure"]]+
                           [{"name":n,"status":"planned"} for n in ["TFT / LSTM","Optuna / full genome","Stacking","LLM prompt builder","Champion approval / RBAC"]]}
@@ -59,14 +59,18 @@ def router(dataset_loader, datasets_list):
     def schema(): return ExperimentSpec.model_json_schema()
 
     @api.post("/research/estimate")
-    def research_estimate(spec:ExperimentSpec, snapshot_id:str|None=None, s=Depends(service)):
-        return s.estimate(spec, snapshot_id)
+    def research_estimate(spec:ExperimentSpec,snapshot_id:str|None=None,workspace_id:str|None=None,s=Depends(service)):
+        return s.estimate(spec, snapshot_id, workspace_id)
 
     @api.get("/research/budget")
-    def research_budget(s=Depends(service)): return s.budget_status()
+    def research_budget(workspace_id:str|None=None,s=Depends(service)): return s.budget_status(workspace_id)
+
+    @api.patch("/research/budget")
+    def update_budget(body:dict,workspace_id:str|None=None,s=Depends(service),who=Depends(actor)):
+        return s.update_budget_limits(body.get("limits", {}),who,workspace_id)
 
     @api.get("/research/ledger")
-    def research_ledger(limit:int=200,s=Depends(service)): return s.ledger(limit)
+    def research_ledger(limit:int=200,workspace_id:str|None=None,s=Depends(service)): return s.ledger(limit,workspace_id)
 
     @api.get("/workspaces")
     def list_workspaces(include_archived:bool=False,s=Depends(service)): return s.list_workspaces(include_archived)
@@ -110,7 +114,7 @@ def router(dataset_loader, datasets_list):
     def feature_families(): return family_registry()
 
     @api.get("/models")
-    def models(): return [{"id":k,**v,"status":"implemented" if is_available(k) else "requires_package"} for k,v in MODEL_REGISTRY.items()]
+    def models(): return [{"id":k,**v} for k,v in MODEL_REGISTRY.items()]
 
     @api.get("/experiments")
     def list_experiments(q:str="",status:str|None=None,model:str|None=None,optimizer:str|None=None,tag:str|None=None,workspace_id:str|None=None,s=Depends(service)):

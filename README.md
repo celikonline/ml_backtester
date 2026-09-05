@@ -31,7 +31,7 @@ Başka bir bilgisayarda Python **3.11/3.12** ve Node **20.19+** kurduktan sonra:
 .\start.ps1
 ```
 
-`requirements.lock.txt` ve `frontend/package-lock.json` test edilen sürümleri sabitler. `requirements.txt` üretim/servis bağımlılıklarını içerir; yerel tam kurulum (MCP sunucusu, testler, Postgres sürücüsü, XGBoost/LightGBM) için `requirements-dev.txt` kullanılır. Sunucu sadece `127.0.0.1` adresine bağlanır; uygulama yerel, tek kullanıcı içindir.
+`requirements.lock.txt` ve `frontend/package-lock.json` test edilen sürümleri sabitler. `requirements.txt` doğrudan bağımlılıkların desteklenen aralıklarını içerir. Sunucu sadece `127.0.0.1` adresine bağlanır; uygulama yerel, tek kullanıcı içindir.
 
 ## Kullanım
 
@@ -44,8 +44,6 @@ Başka bir bilgisayarda Python **3.11/3.12** ve Node **20.19+** kurduktan sonra:
 ## Vercel dağıtımı
 
 Kök dizindeki `vercel.json`, Vite frontend derlemesini ve `api/index.py` içindeki FastAPI girişini yapılandırır. Vercel projesini bu deponun kök dizinine bağlayın; Build/Install ayarları dosyadan otomatik alınır. `/api/v1` uçlarını uzaktan kullanmak için Vercel Project Settings → Environment Variables bölümünde `REGIMELAB_API_KEY` tanımlayın ve frontend oturumunda aynı anahtarı girin. Vercel Functions geçici dosya sistemi kullandığından kalıcı veri için `REGIMELAB_DATABASE_URL` ve uygun harici depolama yapılandırması gerekir.
-
-Vercel fonksiyon paketi 500 MB ile sınırlı olduğundan sunucu dağıtımında yalnızca `requirements.txt` (üretim bağımlılıkları) kurulur; XGBoost/LightGBM, MCP sunucusu, test araçları ve Postgres sürücüsü pakete dahil değildir. Bu yüzden Vercel dağıtımında XGBoost/LightGBM modelleri `/models` listesinde `requires_package` olarak görünür ve seçilemez; Ridge, Random Forest ve Histogram Gradient Boosting tam çalışır. Tüm modelleri yerel kullanmak için `requirements-dev.txt` ile kurulum yapın.
 
 Yeni akışta üstteki **Yeni deney** düğmesi altı adımlı wizard'ı açar. Taslağı kaydedin, experiment detayında specification'ı gözden geçirin ve ayrı **Çalıştır** düğmesiyle başlatın. GA yalnızca geliştirme/verifikasyon dönemini görür; aday dondurulduktan sonra test sadece bir kez ölçülür. Deneyler ekranında 2–5 tamamlanmış kayıt seçerek karşılaştırma yapabilirsiniz.
 
@@ -91,7 +89,7 @@ Başlangıç klasöründe yalnızca iki notebook vardı. `eurusd_cleaned.csv`, m
 - Eğitim oranı %50–75, doğrulama %15, kalan test. Eğitim/doğrulama ve doğrulama/test sınırlarında ikişer bar dışarıda bırakılır.
 - Her rejimde uzmanların doğrulama MSE değerlerinin tersi normalize edilerek ağırlık bulunur. 15'ten az rejim gözlemi varsa tüm doğrulama dönemi kullanılır. İşlem eşiği `[0, 0.25, 0.5, 1, 2]` baz puan arasından doğrulama Sharpe değerine göre seçilir. Seçimden sonra test yeniden optimizasyon yapmaz.
 - t barının kapanış bilgisiyle sinyal üretilir; t+1 açılışında işlem yapılır ve t+2 açılışına kadar tutulur. Tahmin edilen hedef bu iki açılış arasındaki basit getiridir. CSV'de `signal_timestamp` özellik barını, `timestamp` getirinin gerçekleştiği açılışı gösterir.
-- 1 bp = %0,01. Tek yön maliyeti girişte, pozisyon değişiminde ve son çıkışta uygulanır. Long→short dönüşü iki yön maliyeti taşır. Ayrı spread/funding modeli yoktur; toplam tahmini sürtünme maliyet alanıyla temsil edilir. Kaldıraç yoktur.
+- 1 bp = %0,01. Tek yön maliyeti girişte, pozisyon değişiminde ve son çıkışta uygulanır. Long→short dönüşü iki yön maliyeti taşır. Ayrı spread/funding modeli yoktur; toplam tahmini sürtünme maliyet alanıyla temsil edilir. Kaldıraç yoktur. Deney platformunda `spread_model: ohlc_range` seçilirse spread bar aralığına göre ölçeklenir; validasyon ve final test aynı maliyet modelini kullanır. Long/short swap oranları ve Çarşamba triple rollover opsiyoneldir.
 - Sharpe risksiz oranı 0'dır. Yıllık bar sayısı `252 × 24 / medyan_bar_saati` ile varsayılır. Düşüş ilk sermayeyi de zirve hesabına dahil eder. Pozisyon değişimi tamamlanmış işlem sayısı değildir. Kazanma oranı aktif barlar üzerinden hesaplanır.
 - Rejim numaraları ekonomik yükseliş/düşüş etiketleri değildir. Durumdaki ortalama test hedef getirisi açıklayıcıdır, model eğitiminde kullanılmaz.
 - Deney konfigürasyonları, günlükler ve raporlar `data/run-*.json`; yüklenen CSV'ler `data/dataset-*` olarak yerelde saklanır. Eğitilmiş model nesneleri kaydedilmez; konfigürasyonla yeniden eğitim yapılabilir. Aynı anda bir deney çalışır. Sunucunun kapanması devam eden çalıştırmayı keser; tamamlanan sonuçlar korunur.

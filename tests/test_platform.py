@@ -215,6 +215,66 @@ def test_search_space_workspace_binding(tmp_path):
         service.close()
 
 
+def test_budget_isolated_per_workspace(tmp_path):
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "bud.db").as_posix(), storage=tmp_path / "bud")
+    actor = {"id": "tester", "source": "REST", "request_id": "bud"}
+    try:
+        ws_a = service.create_workspace({"name": "Budget A"}, actor)
+        ws_b = service.create_workspace({"name": "Budget B"}, actor)
+        service.create(make_spec("a1"), actor, workspace_id=ws_a["id"])
+        b1 = service.create(make_spec("b1"), actor, workspace_id=ws_b["id"])
+        service.create(make_spec("b2"), actor, workspace_id=ws_b["id"])
+        service.run(b1["id"], "budget-key", actor)
+        ba = service.budget_status(ws_a["id"])
+        bb = service.budget_status(ws_b["id"])
+        assert ba["workspace_id"] == ws_a["id"] and bb["workspace_id"] == ws_b["id"]
+        assert ba["usage"]["experiments"] == 1 and bb["usage"]["experiments"] == 2
+        assert bb["usage"]["candidates"] > 0 and ba["usage"]["candidates"] == 0
+        assert {e["budget_id"] for e in service.ledger(workspace_id=ws_b["id"])} == {bb["id"]}
+        assert len(service.ledger()) == len(service.ledger(workspace_id=ws_a["id"])) + len(service.ledger(workspace_id=ws_b["id"]))
+        est = service.estimate(make_spec("scoped"), None, ws_b["id"])
+        assert "sealed_test_accesses" in est and "post_test_iteration" in est
+        upd = service.update_budget_limits({"max_experiments": 5}, actor, ws_a["id"])
+        assert upd["limits"]["max_experiments"] == 5 and upd["limits"]["max_candidates"] == 2000
+        with pytest.raises(DomainError, match="Geçersiz"):
+            service.update_budget_limits({"max_experiments": -1}, actor, ws_a["id"])
+        with pytest.raises(DomainError, match="Geçersiz"):
+            service.update_budget_limits({"nope": 1}, actor, ws_a["id"])
+        with pytest.raises(DomainError, match="bulunamadı"):
+            service.budget_status("WS-NOPE")
+    finally:
+        service.close()
+
+
+def test_budget_migration_reassigns_legacy_global(tmp_path):
+    from sqlalchemy import text
+    from alembic.config import Config
+    from alembic import command
+    from backend.platform.db import ROOT
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "mig.db").as_posix(), storage=tmp_path / "mig")
+    actor = {"id": "tester", "source": "REST"}
+    try:
+        service.create(make_spec("pre-migration"), actor)
+        with service.engine.begin() as con:
+            con.execute(text("INSERT INTO research_budgets (id, limits, created_at, updated_at) VALUES ('global', '{\"a\": 1}', 't', 't')"))
+            con.execute(text("INSERT INTO research_trial_events (budget_id, experiment_id, event_type, quantity, details, created_at) VALUES ('global', NULL, 'legacy_probe', 3, '{}', 't')"))
+        cfg = Config(str(ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(ROOT / "backend" / "migrations"))
+        with service.engine.begin() as conn:
+            cfg.attributes["connection"] = conn
+            command.downgrade(cfg, "0006_workspaces")
+            command.upgrade(cfg, "head")
+        default = service.get_workspace("WS-DEFAULT")
+        status = service.budget_status(default["id"])
+        assert status["usage"]["experiments"] == 1
+        kinds = {(e["event_type"], e["quantity"]) for e in service.ledger(workspace_id=default["id"])}
+        assert ("legacy_probe", 3) in kinds
+        with service.engine.connect() as con:
+            assert not con.execute(text("SELECT id FROM research_budgets WHERE id = 'global'")).first()
+    finally:
+        service.close()
+
+
 def test_policy_rejects_excessive_work(tmp_path):
     service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "x.db").as_posix(), storage=tmp_path / "a")
     try:

@@ -52,7 +52,9 @@ test_access_events = Table("test_access_events", metadata,
     Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("run_id", String(36), ForeignKey("experiment_runs.id")),
     Column("actor", String(120), nullable=False), Column("purpose", String(80), nullable=False), Column("created_at", String(40), nullable=False))
 research_budgets = Table("research_budgets", metadata,
-    Column("id", String(120), primary_key=True), Column("limits", JSON, nullable=False), Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False))
+    Column("id", String(120), primary_key=True), Column("limits", JSON, nullable=False), Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False),
+    Column("workspace_id", String(36), ForeignKey("workspaces.id")))
+Index("ix_budgets_workspace_id", research_budgets.c.workspace_id, unique=True)
 research_trial_events = Table("research_trial_events", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True), Column("budget_id", String(120), ForeignKey("research_budgets.id"), nullable=False),
     Column("experiment_id", String(36), ForeignKey("experiments.id")), Column("event_type", String(80), nullable=False),

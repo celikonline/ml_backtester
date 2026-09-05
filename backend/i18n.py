@@ -77,12 +77,14 @@ EXACT = {
     "Varsayılan workspace arşivlenemez.": "The default workspace cannot be archived.",
     "Workspace uyuşmazlığı.": "Workspace mismatch.",
     "Search space bulunamadı.": "Search space not found.",
+    "Geçersiz bütçe limiti.": "Invalid budget limit.",
+    "Tahmin ve gerçekleşen uzunluğu uyuşmuyor.": "Prediction and realization lengths differ.",
+    "Bar verisi uzunluğu uyuşmuyor.": "Bar data length mismatch.",
 }
 
 PREFIX = {
     "Eksik sütunlar:": "Missing columns:",
     "Hesaplama sınırı:": "Compute limit:",
-    "Bu ortamda kurulu olmayan model istendi:": "Requested model is not installed in this environment:",
 }
 
 

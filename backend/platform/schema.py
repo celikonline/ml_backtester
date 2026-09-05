@@ -67,6 +67,9 @@ class BacktestRealityConfig(Contract):
     commission_bps: float = Field(0, ge=0, le=50)
     slippage_bps: float = Field(.2, ge=0, le=50)
     rollover_bps_per_day: float = Field(0, ge=-50, le=50)
+    rollover_long_bps_per_day: float | None = Field(None, ge=-50, le=50)
+    rollover_short_bps_per_day: float | None = Field(None, ge=-50, le=50)
+    triple_wednesday_rollover: bool = False
     timezone: str = "UTC"
     max_leverage: float = Field(1, ge=1, le=30)
     max_position_fraction: float = Field(1, gt=0, le=1)
@@ -111,8 +114,6 @@ class ExperimentSpec(Contract):
             raise ValueError("Model listesinde tekrar var.")
         if not self.name.strip():
             raise ValueError("Deney adı boş olamaz.")
-        from .models import require_available
-        require_available(self.models)
         return self
 
 

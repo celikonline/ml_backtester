@@ -51,8 +51,9 @@ async def create_search_space(definition:SearchSpaceDefinition)->dict:
     return await call("POST","/search-spaces",definition.model_dump())
 
 @mcp.tool()
-async def get_research_budget()->dict:
-    return await call("GET","/research/budget")
+async def get_research_budget(workspace_id:str|None=None)->dict:
+    suffix=f"?workspace_id={workspace_id}" if workspace_id else ""
+    return await call("GET",f"/research/budget{suffix}")
 
 @mcp.tool()
 async def get_research_ledger(limit:int=200)->list:

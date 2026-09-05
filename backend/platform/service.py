@@ -14,7 +14,7 @@ from pathlib import Path
 from sqlalchemy import select, update, func
 from sqlalchemy.exc import IntegrityError
 
-from backend.engine import read_prices
+from backend.engine import read_prices, audit_calendar
 from .db import connect, migrate, snapshots, experiments, runs, events, audits, test_seals, test_access_events, research_budgets, research_trial_events, experiment_edges, search_spaces, optimization_candidates, feature_evaluations, feature_stability_runs, workspaces, ROOT, STORAGE
 from .schema import ExperimentSpec, SearchSpaceDefinition, WorkspaceCreate, WorkspacePatch, DomainError, POLICY, STAGES, TERMINAL, RESEARCH_BUDGET, check_policy, estimate_research_risk
 from .scope import workspace_scope
@@ -45,33 +45,74 @@ class ExperimentService:
         self.process = None
         if initialize: migrate(self.engine)
 
-    def _budget_usage(self, con, budget_id="global"):
+    def _budget_usage(self, con, budget_id):
         rows = con.execute(select(research_trial_events.c.event_type, func.coalesce(func.sum(research_trial_events.c.quantity), 0)).where(research_trial_events.c.budget_id == budget_id).group_by(research_trial_events.c.event_type)).all()
         values = {kind: int(quantity) for kind, quantity in rows}
         return {"experiments": values.get("experiment_created", 0), "candidates": values.get("candidate_planned", 0),
                 "backtests": values.get("backtest_planned", 0), "sealed_test_accesses": values.get("sealed_test_opened", 0)}
 
-    def budget_status(self):
+    def _ensure_budget(self, con, workspace_id):
+        row = con.execute(select(research_budgets).where(research_budgets.c.workspace_id == workspace_id)).mappings().first()
+        if not row:
+            record = {"id": uid(), "limits": dict(RESEARCH_BUDGET), "workspace_id": workspace_id, "created_at": now(), "updated_at": now()}
+            con.execute(research_budgets.insert().values(**record))
+            return record
+        return dict(row)
+
+    def _resolve_budget_workspace(self, con, workspace_id=None):
+        ws = workspace_id or workspace_scope.get()
+        if ws:
+            row = con.execute(select(workspaces.c.id).where((workspaces.c.id == ws) | (workspaces.c.code == ws))).first()
+            if not row: raise DomainError("Workspace bulunamadı.", 404, "not_found")
+            return row[0]
+        return self.ensure_default_workspace()["id"]
+
+    def budget_status(self, workspace_id=None):
         with self.engine.begin() as con:
-            if not con.execute(select(research_budgets.c.id).where(research_budgets.c.id == "global")).first():
-                con.execute(research_budgets.insert().values(id="global", limits=RESEARCH_BUDGET, created_at=now(), updated_at=now()))
-            return {"id":"global", "usage":self._budget_usage(con), "limits":RESEARCH_BUDGET}
+            budget = self._ensure_budget(con, self._resolve_budget_workspace(con, workspace_id))
+            return {"id": budget["id"], "workspace_id": budget.get("workspace_id"),
+                    "usage": self._budget_usage(con, budget["id"]), "limits": budget["limits"]}
 
-    def ledger(self, limit=200):
+    def update_budget_limits(self, limits, actor, workspace_id=None):
+        if not isinstance(limits, dict) or not limits: raise DomainError("Geçersiz bütçe limiti.", 422, "invalid_budget")
+        unknown = set(limits) - set(RESEARCH_BUDGET)
+        if unknown or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0 for v in limits.values()):
+            raise DomainError("Geçersiz bütçe limiti.", 422, "invalid_budget")
+        with self.engine.begin() as con:
+            budget = self._ensure_budget(con, self._resolve_budget_workspace(con, workspace_id))
+            merged = {**budget["limits"], **limits}
+            con.execute(update(research_budgets).where(research_budgets.c.id == budget["id"]).values(limits=merged, updated_at=now()))
+            self.audit(con, "budget.update", budget["id"], actor, {"limits": merged, "workspace_id": budget.get("workspace_id")})
+            return {"id": budget["id"], "workspace_id": budget.get("workspace_id"),
+                    "usage": self._budget_usage(con, budget["id"]), "limits": merged}
+
+    def ledger(self, limit=200, workspace_id=None):
         with self.engine.connect() as con:
-            return [dict(row) for row in con.execute(select(research_trial_events).order_by(research_trial_events.c.id.desc()).limit(max(1, min(limit, 500))).offset(0)).mappings()]
+            stmt = select(research_trial_events).order_by(research_trial_events.c.id.desc()).limit(max(1, min(limit, 500))).offset(0)
+            ws = workspace_id or workspace_scope.get()
+            if ws:
+                row = con.execute(select(workspaces.c.id).where((workspaces.c.id == ws) | (workspaces.c.code == ws))).first()
+                if not row: raise DomainError("Workspace bulunamadı.", 404, "not_found")
+                budget = con.execute(select(research_budgets.c.id).where(research_budgets.c.workspace_id == row[0])).first()
+                stmt = stmt.where(research_trial_events.c.budget_id == (budget[0] if budget else "__none__"))
+            return [dict(row) for row in con.execute(stmt).mappings()]
 
-    def estimate(self, spec, snapshot_id=None):
+    def estimate(self, spec, snapshot_id=None, workspace_id=None):
         spec = ExperimentSpec.model_validate(spec)
         snapshot = self.get_snapshot(snapshot_id) if snapshot_id else None
         rows = snapshot["details"]["rows"] if snapshot else POLICY["max_rows"]
-        return estimate_research_risk(spec, rows, self.budget_status()["usage"])
+        return estimate_research_risk(spec, rows, self.budget_status(workspace_id)["usage"])
 
     def _record_trial(self, con, event_type, quantity=1, experiment_id=None, details=None):
-        if not con.execute(select(research_budgets.c.id).where(research_budgets.c.id == "global")).first():
-            con.execute(research_budgets.insert().values(id="global", limits=RESEARCH_BUDGET, created_at=now(), updated_at=now()))
-        con.execute(research_trial_events.insert().values(budget_id="global", experiment_id=experiment_id, event_type=event_type, quantity=quantity, details=details or {}, created_at=now()))
-        con.execute(update(research_budgets).where(research_budgets.c.id == "global").values(updated_at=now()))
+        details = details or {}
+        ws = details.get("workspace_id")
+        if not ws and experiment_id:
+            ws = con.execute(select(experiments.c.workspace_id).where(experiments.c.id == experiment_id)).scalar()
+        if not ws:
+            ws = self.ensure_default_workspace()["id"]
+        budget = self._ensure_budget(con, ws)
+        con.execute(research_trial_events.insert().values(budget_id=budget["id"], experiment_id=experiment_id, event_type=event_type, quantity=quantity, details=details, created_at=now()))
+        con.execute(update(research_budgets).where(research_budgets.c.id == budget["id"]).values(updated_at=now()))
 
     def _active_seal(self, con, snapshot_id):
         return con.execute(select(test_seals).where(test_seals.c.test_dataset_id == snapshot_id, test_seals.c.invalidated_at.is_(None)).order_by(test_seals.c.epoch.desc())).mappings().first()
@@ -178,7 +219,8 @@ class ExperimentService:
             if not seal: raise DomainError("Seal bulunamadı.", 404, "not_found")
             if seal["invalidated_at"]: return dict(seal)
             con.execute(update(test_seals).where(test_seals.c.seal_id == seal_id).values(invalidated_at=now(), invalidation_reason=reason))
-            self._record_trial(con, "seal_invalidated", details={"seal_id":seal_id, "epoch":seal["epoch"], "reason":reason})
+            snap_ws = con.execute(select(snapshots.c.workspace_id).where(snapshots.c.id == seal["test_dataset_id"])).scalar()
+            self._record_trial(con, "seal_invalidated", details={"seal_id":seal_id, "epoch":seal["epoch"], "reason":reason, "workspace_id": snap_ws})
             self.audit(con, "seal.invalidate", seal_id, actor, {"test_dataset_id":seal["test_dataset_id"], "epoch":seal["epoch"], "reason":reason})
             return dict(con.execute(select(test_seals).where(test_seals.c.seal_id == seal_id)).mappings().one())
 
@@ -192,7 +234,8 @@ class ExperimentService:
                 con.execute(update(test_seals).where(test_seals.c.seal_id == latest["seal_id"]).values(invalidated_at=now(), invalidation_reason="rotated: " + reason))
             record = {"seal_id":uid(), "test_dataset_id":snapshot_id, "access_count":0, "epoch":latest["epoch"] + 1, "invalidated_at":None, "invalidation_reason":None, "created_at":now()}
             con.execute(test_seals.insert().values(**record))
-            self._record_trial(con, "seal_rotated", details={"seal_id":record["seal_id"], "epoch":record["epoch"], "reason":reason, "supersedes":latest["seal_id"]})
+            snap_ws = con.execute(select(snapshots.c.workspace_id).where(snapshots.c.id == snapshot_id)).scalar()
+            self._record_trial(con, "seal_rotated", details={"seal_id":record["seal_id"], "epoch":record["epoch"], "reason":reason, "supersedes":latest["seal_id"], "workspace_id": snap_ws})
             self.audit(con, "seal.rotate", record["seal_id"], actor, {"test_dataset_id":snapshot_id, "epoch":record["epoch"], "reason":reason, "supersedes":latest["seal_id"]})
             return dict(record)
 
@@ -259,13 +302,16 @@ class ExperimentService:
         unverified = sorted(set(external)-set(verified))
         late = sum(int((df[f"{column}__available_at"].notna() & (df[f"{column}__available_at"] > df.index)).sum()) for column in verified)
         point_in_time = "verified" if external and not unverified and late == 0 else ("partially_verified" if verified else "unverified")
+        calendar = audit_calendar(df)
         meta = {"dataset_id":dataset_id,"name":name,"demo":demo,"rows":len(df),"columns":list(df.columns),
                 "start":df.index[0].isoformat(),"end":df.index[-1].isoformat(),"missing_values":int(df.isna().sum().sum()),
                 "median_bar_seconds":float(gaps.median().total_seconds()),"irregular_intervals":int((gaps!=gaps.median()).sum()),
                 "timezone":"UTC normalized","point_in_time":point_in_time,"external_series":external,
                 "availability_verified":verified,"availability_unverified":unverified,"late_availability_rows":late,
                 "revision":"not supplied","survivorship":"not applicable to fixed EURUSD series",
-                "dst_audit":"source timezone/release provenance unavailable","gap_provenance":"weekend and missing-source gaps not distinguished"}
+                "dst_audit":f"source timestamps {calendar['source_timezone']}, normalized to UTC on ingest",
+                "gap_provenance":f"{calendar['weekend_gaps']} weekend gaps, {calendar['midweek_gaps']} midweek gaps, {calendar['weekend_bars']} weekend bars",
+                "calendar":calendar}
         record = {"id":identifier,"sha256":digest,"path":str(path.relative_to(self.storage)),"details":meta,"created_at":now()}
         with self.engine.begin() as con:
             ws = self._resolve_workspace(con, workspace_id)
@@ -301,7 +347,7 @@ class ExperimentService:
         else:
             snapshot = self.snapshot(spec.dataset_id, ws["id"])
         check_policy(spec,snapshot["details"]["rows"])
-        risk = self.estimate(spec, snapshot["id"])
+        risk = self.estimate(spec, snapshot["id"], ws["id"])
         if risk["risk_score"] >= RESEARCH_BUDGET["risk_reject_at"]:
             raise DomainError("Araştırma bütçesi/multiple-testing riski politika sınırını aşıyor.",422,"policy_rejected")
         from .research import registry
@@ -386,7 +432,7 @@ class ExperimentService:
             return dict(existing)
         spec=ExperimentSpec.model_validate(item["specification"])
         estimate=check_policy(spec,item["snapshot"]["details"]["rows"])
-        risk=estimate_research_risk(spec,item["snapshot"]["details"]["rows"],self.budget_status()["usage"])
+        risk=estimate_research_risk(spec,item["snapshot"]["details"]["rows"],self.budget_status(item["workspace_id"])["usage"])
         if risk["risk_score"] >= RESEARCH_BUDGET["risk_reject_at"]: raise DomainError("Araştırma bütçesi/multiple-testing riski politika sınırını aşıyor.",422,"policy_rejected")
         run_id=uid()
         record={"id":run_id,"experiment_id":item["id"],"idempotency_key":scoped_key,"status":"QUEUED","progress":0,"message":"Sıraya alındı", "created_at":now(),"cancel_requested":0,"runtime":{"estimate":estimate}}

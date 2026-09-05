@@ -36,6 +36,8 @@ def read_prices(raw: bytes) -> pd.DataFrame:
     value_columns = [c for c in optional if not c.endswith("__available_at")]
     availability_columns = [c for c in optional if c.endswith("__available_at")]
     df = df[required + value_columns + availability_columns].copy()
+    raw_stamp = df["timestamp"].astype(str)
+    aware = bool(raw_stamp.str.contains(r"(Z|[+-]\d{2}:?\d{2})$").any())
     df["timestamp"] = pd.to_datetime(df.timestamp, errors="coerce", utc=True, format="mixed")
     for col in required[1:]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -60,7 +62,9 @@ def read_prices(raw: bytes) -> pd.DataFrame:
         raise ValueError("Tekrarlanan zaman damgaları var.")
     if not 400 <= len(df) <= 200_000:
         raise ValueError("CSV 400 ile 200.000 satır arasında olmalı.")
-    return df[required + value_columns + availability_columns].sort_values("timestamp").set_index("timestamp")
+    out = df[required + value_columns + availability_columns].sort_values("timestamp").set_index("timestamp")
+    out.attrs["source_timezone"] = "offset-aware" if aware else "naive-assumed-UTC"
+    return out
 
 
 def demo_prices(n=3000):
@@ -72,8 +76,10 @@ def demo_prices(n=3000):
     spread = rng.uniform(0.0001, 0.0010, n)
     idx = pd.date_range("2023-01-02", periods=n * 2, freq="4h", tz="UTC")
     idx = idx[idx.dayofweek < 5][:n]
-    return pd.DataFrame({"open": op, "high": np.maximum(op, close) + spread,
-                         "low": np.minimum(op, close) - spread, "close": close}, index=idx.rename("timestamp"))
+    out = pd.DataFrame({"open": op, "high": np.maximum(op, close) + spread,
+                        "low": np.minimum(op, close) - spread, "close": close}, index=idx.rename("timestamp"))
+    out.attrs["source_timezone"] = "offset-aware"
+    return out
 
 
 def preview_value(value):
@@ -140,15 +146,66 @@ def backtest(prediction, actual, cost, threshold=0):
     return returns, signal
 
 
-def fx_backtest(prediction, actual, reality, timestamps, threshold=0):
-    """Deterministic FX execution: signal-close, next-open fill, then rollover."""
+def fx_backtest(prediction, actual, reality, timestamps, threshold=0, high=None, low=None):
+    """Deterministic FX execution: signal-close, next-open fill, then rollover.
+
+    ``spread_model="ohlc_range"`` scales the quoted spread per bar by that bar's
+    high-low range relative to the window median (cost normalization only; it
+    never touches signals). Without bar data it falls back to the fixed spread.
+    """
     config = reality.model_dump() if hasattr(reality, "model_dump") else reality
-    one_way = (config.get("spread_bps", 0) / 2 + config.get("commission_bps", 0) + config.get("slippage_bps", 0)) / 10000
-    ret, signal = backtest(prediction, actual, one_way, threshold)
+    prediction, actual = np.asarray(prediction, dtype=float), np.asarray(actual, dtype=float)
+    if len(prediction) != len(actual):
+        raise ValueError("Tahmin ve gerçekleşen uzunluğu uyuşmuyor.")
+    spread_bps = config.get("spread_bps", 0)
+    fallback = False
+    if config.get("spread_model", "fixed") == "ohlc_range" and high is not None and low is not None:
+        high, low = np.asarray(high, dtype=float), np.asarray(low, dtype=float)
+        if len(high) != len(actual) or len(low) != len(actual):
+            raise ValueError("Bar verisi uzunluğu uyuşmuyor.")
+        width = np.maximum(high - low, 0)
+        median = float(np.median(width)) or 1.0
+        spread_vec = np.asarray(spread_bps, dtype=float) * width / median
+    else:
+        fallback = config.get("spread_model", "fixed") == "ohlc_range"
+        spread_vec = np.full(len(actual), spread_bps, dtype=float)
+    one_way = (spread_vec / 2 + config.get("commission_bps", 0) + config.get("slippage_bps", 0)) / 10000
+    signal = np.where(prediction > threshold, 1, np.where(prediction < -threshold, -1, 0))
+    turnover = np.abs(np.diff(signal, prepend=0)).astype(float)
+    # Close the final position, charging the same one-way transaction cost.
+    turnover[-1] += abs(signal[-1])
+    base = signal * actual - turnover * one_way
     index = pd.DatetimeIndex(timestamps)
     elapsed_days = np.r_[0., np.maximum(0., np.diff(index.asi8) / 86_400_000_000_000)]
-    financing = np.abs(signal) * elapsed_days * config.get("rollover_bps_per_day", 0) / 10000
-    return ret - financing, signal, {"one_way_cost_bps": one_way * 10000, "financing_bps": float(financing.sum() * 10000)}
+    flat = config.get("rollover_bps_per_day", 0)
+    long_bps = config.get("rollover_long_bps_per_day", flat)
+    short_bps = config.get("rollover_short_bps_per_day", flat)
+    long_bps = flat if long_bps is None else long_bps
+    short_bps = flat if short_bps is None else short_bps
+    rate = np.where(signal > 0, long_bps, np.where(signal < 0, short_bps, 0)) / 10000
+    if config.get("triple_wednesday_rollover", False):
+        rate = np.where(index.dayofweek == 2, rate * 3, rate)
+    financing = np.abs(signal) * elapsed_days * rate
+    ret = base - financing
+    return ret, signal, {"one_way_cost_bps": float(one_way.mean() * 10000),
+                         "avg_spread_bps": float(spread_vec.mean()),
+                         "spread_model": config.get("spread_model", "fixed"),
+                         "spread_fallback": bool(fallback),
+                         "financing_bps": float(financing.sum() * 10000)}
+
+
+def audit_calendar(df):
+    """Classify bar gaps: weekend sessions vs missing-source bars. Audit only, never rejects."""
+    index = pd.DatetimeIndex(df.index).tz_convert("UTC")
+    deltas = index.to_series().diff().dropna()
+    median = float(deltas.median().total_seconds()) if len(deltas) else 0.0
+    gaps = deltas[deltas > deltas.median() * 1.5] if len(deltas) else deltas[:0]
+    weekend_gaps = sum(1 for ts in gaps.index if ts.dayofweek == 0)
+    weekend_bars = int(((index.dayofweek == 5) | (index.dayofweek == 6)).sum())
+    return {"source_timezone": df.attrs.get("source_timezone", "unknown"),
+            "median_bar_seconds": median, "gap_bars": int(len(gaps)),
+            "weekend_gaps": int(weekend_gaps), "midweek_gaps": int(len(gaps) - weekend_gaps),
+            "weekend_bars": weekend_bars}
 
 
 def metrics(ret, signal, annual):
