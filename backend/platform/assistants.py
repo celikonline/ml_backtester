@@ -60,6 +60,8 @@ class TaskInput(BaseModel):
 
 TEMPLATES = [dict(id="template-" + key, template=True, author="Regime Lab", **AssistantConfig(
     name=name, description=description, stage=stage,
+    auto_backtest=key == "backtest",
+    permissions=["experiments", "metrics", "backtest_run"] if key == "backtest" else ["experiments", "metrics"],
     system_prompt=prompt + " Yanıtı kullanıcının dilinde yaz. Bulguları, belirsizlikleri ve sonraki adımları ayır.").model_dump())
     for key, name, description, stage, prompt in [
         ("research", "Research Assistant", "Deneyleri inceleyin ve araştırma planı hazırlayın.", "research", "Sen bir nicel araştırma asistanısın. Hipotez, veri ve doğrulama planını değerlendir."),
@@ -101,6 +103,7 @@ class AssistantService:
     def __init__(self, experiments):
         self.experiments = experiments
         self.engine = experiments.engine
+        self.stop_event = None
 
     def scope(self):
         value = workspace_scope.get()
@@ -163,39 +166,39 @@ class AssistantService:
         with self.engine.connect() as con:
             row = con.execute(select(tasks).where(tasks.c.id == identifier, tasks.c.workspace_id == self.scope())).mappings().first()
         if not row:
-            raise DomainError("G?rev bulunamad?.", 404, "not_found")
+            raise DomainError("Görev bulunamadı.", 404, "not_found")
         return dict(row)
 
     def cancel(self, identifier, who):
         self.get_task(identifier)
         with self.engine.begin() as con:
             con.execute(tasks.update().where(tasks.c.id == identifier, tasks.c.status.in_(["QUEUED", "RUNNING", "WAITING_BACKTEST"])).values(
-                status="CANCELLED", output="Zincir durduruldu. Ba?lat?lm?? backtest deney ekran?ndan takip edilebilir."))
+                status="CANCELLED", output="Zincir durduruldu. Başlatılmış backtest deney ekranından takip edilebilir."))
             self.experiments.audit(con, "assistant.task.cancel", identifier, who)
         return self.get_task(identifier)
 
     def run(self, body, who=None):
         plan = self.plan(body.assistant_id)
         if not provider_status()["configured"]:
-            raise DomainError("Sunucuda REGIMELAB_AI_MODEL ayarlanmal? ve Ollama ?al???yor olmal?.", 503, "provider_not_configured")
+            raise DomainError("Sunucuda REGIMELAB_AI_MODEL ayarlanmalı ve Ollama çalışıyor olmalı.", 503, "provider_not_configured")
         experiment = None
         if body.experiment_id:
             experiment = self.experiments.get(body.experiment_id)
             if experiment.get("workspace_id") != self.scope():
-                raise DomainError("Deney bulunamad?.", 404, "not_found")
+                raise DomainError("Deney bulunamadı.", 404, "not_found")
             exposed = set()
             for assistant in plan:
                 reads = set(assistant["permissions"]) & {"experiments", "metrics"}
                 if "experiments" not in reads or not exposed.issubset(reads):
-                    raise DomainError("Zincirde her asistan?n deney ve ?nceki ad?mlarda payla??lan verileri okuma izni olmal?.", 403, "permission_denied")
+                    raise DomainError("Zincirde her asistanın deney ve önceki adımlarda paylaşılan verileri okuma izni olmalı.", 403, "permission_denied")
                 exposed |= reads
         if body.run_backtest:
             if not experiment:
-                raise DomainError("Otomatik backtest i?in bir deney se?in.", 422, "experiment_required")
+                raise DomainError("Otomatik backtest için bir deney seçin.", 422, "experiment_required")
             if not any(a["auto_backtest"] for a in plan):
-                raise DomainError("Zincirde otomatik backtest ad?m? yok.", 422, "backtest_step_required")
+                raise DomainError("Zincirde otomatik backtest adımı yok.", 422, "backtest_step_required")
             if experiment["status"] in TERMINAL - {"COMPLETED"}:
-                raise DomainError("Ba?ar?s?z veya iptal edilmi? deney yeniden ?al??t?r?lamaz; ?nce klonlay?n.", 409, "test_already_exposed")
+                raise DomainError("Başarısız veya iptal edilmiş deney yeniden çalıştırılamaz; önce klonlayın.", 409, "test_already_exposed")
         identifier = str(uuid.uuid4())
         who = who or {"id": "local-user", "source": "REST", "request_id": identifier}
         record = dict(id=identifier, workspace_id=self.scope(), assistant_id=plan[0]["id"],
@@ -212,12 +215,16 @@ class AssistantService:
 
     def _store_progress(self, record):
         # Cancellation wins over a late model response or backtest status update.
+        if self.stop_event is not None and self.stop_event.is_set():
+            return False
         with self.engine.begin() as con:
             return con.execute(tasks.update().where(tasks.c.id == record["id"], tasks.c.status == "RUNNING").values(
                 status=record["status"], output=record["output"], details=record["details"])).rowcount == 1
 
     def advance(self, identifier):
         """Execute at most one step. Waiting backtests never block the model worker."""
+        if self.stop_event is not None and self.stop_event.is_set():
+            return
         with self.engine.begin() as con:
             changed = con.execute(tasks.update().where(tasks.c.id == identifier, tasks.c.status.in_(["QUEUED", "WAITING_BACKTEST"])).values(status="RUNNING"))
             if changed.rowcount != 1:
@@ -234,10 +241,10 @@ class AssistantService:
             if details["experiment_id"]:
                 experiment = self.experiments.get(details["experiment_id"])
                 if experiment.get("workspace_id") != record["workspace_id"]:
-                    raise DomainError("Deney bulunamad?.", 404, "not_found")
+                    raise DomainError("Deney bulunamadı.", 404, "not_found")
             if config.auto_backtest and details["run_backtest"]:
                 if not {"experiments", "metrics", "backtest_run"}.issubset(config.permissions) or not experiment:
-                    raise DomainError("Backtest ?al??t?rma izni veya deney eksik.", 403, "permission_denied")
+                    raise DomainError("Backtest çalıştırma izni veya deney eksik.", 403, "permission_denied")
                 if experiment["status"] == "DRAFT":
                     # Stable key and the experiment's single-run gate prevent duplicate backtests.
                     if self.get_task(identifier)["status"] == "CANCELLED":
@@ -273,7 +280,7 @@ class AssistantService:
             for previous in details["steps"][:details["index"]]:
                 messages.append({"role": "user", "content": "Previous assistant (" + previous["config"]["name"] + "):\n" + previous["output"][:16000]})
             messages.append({"role": "user", "content": record["prompt"]})
-            if self.get_task(identifier)["status"] == "CANCELLED":
+            if not self._store_progress(record):
                 return
             step["output"] = complete(messages, model=details["model"])
             step["status"], step["finished_at"] = "COMPLETED", now()
@@ -282,7 +289,7 @@ class AssistantService:
             record["status"] = "COMPLETED" if details["index"] == len(details["steps"]) else "QUEUED"
         except Exception as exc:
             logging.getLogger(__name__).exception("Assistant task %s failed", identifier)
-            message = str(exc) if isinstance(exc, DomainError) else "G?rev i?lenemedi; sunucu g?nl???n? kontrol edin."
+            message = str(exc) if isinstance(exc, DomainError) else "Görev işlenemedi; sunucu günlüğünü kontrol edin."
             record["status"], record["output"] = "FAILED", message
             if step is not None:
                 step["status"], step["error"] = "FAILED", message
@@ -296,6 +303,7 @@ class AssistantWorker:
     def __init__(self, experiments):
         self.manager = AssistantService(experiments)
         self.stop = threading.Event()
+        self.manager.stop_event = self.stop
         self.thread = threading.Thread(target=self._loop, name="regimelab-assistants", daemon=True)
 
     def start(self):
@@ -305,7 +313,7 @@ class AssistantWorker:
                 resumable = bool(row["details"].get("steps"))
                 con.execute(tasks.update().where(tasks.c.id == row["id"]).values(
                     status="QUEUED" if resumable else "FAILED",
-                    output=row["output"] if resumable else "Sunucu yeniden ba?lad?; ?nceki g?rev kesildi."))
+                    output=row["output"] if resumable else "Sunucu yeniden başladı; önceki görev kesildi."))
         self.thread.start()
 
     def close(self):
