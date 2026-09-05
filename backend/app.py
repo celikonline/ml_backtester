@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from .engine import demo_prices, describe, read_prices, run_experiment
 from .i18n import translate
+from .platform.scope import workspace_scope
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -30,6 +31,16 @@ async def localized_http_error(request: Request, exc: HTTPException):
     lang = request.headers.get("accept-language", "")
     detail = translate(exc.detail, lang) if isinstance(exc.detail, str) else exc.detail
     return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
+
+
+@app.middleware("http")
+async def workspace_scope_middleware(request: Request, call_next):
+    scope = request.query_params.get("workspace_id") or request.headers.get("x-workspace-id")
+    token = workspace_scope.set(scope)
+    try:
+        return await call_next(request)
+    finally:
+        workspace_scope.reset(token)
 pool = ThreadPoolExecutor(max_workers=1)
 lock = threading.Lock()
 jobs = {}

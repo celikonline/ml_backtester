@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
 
-from .schema import ExperimentSpec, SearchSpaceDefinition, CloneSpec, CompareSpec, DomainError, POLICY, TERMINAL
+from .schema import ExperimentSpec, SearchSpaceDefinition, WorkspaceCreate, WorkspacePatch, CloneSpec, CompareSpec, DomainError, POLICY, TERMINAL
 from .service import ExperimentService
 from .models import MODEL_REGISTRY, is_available
 from .research import registry
@@ -68,11 +68,26 @@ def router(dataset_loader, datasets_list):
     @api.get("/research/ledger")
     def research_ledger(limit:int=200,s=Depends(service)): return s.ledger(limit)
 
+    @api.get("/workspaces")
+    def list_workspaces(include_archived:bool=False,s=Depends(service)): return s.list_workspaces(include_archived)
+
+    @api.post("/workspaces",status_code=201)
+    def create_workspace(body:WorkspaceCreate,s=Depends(service),who=Depends(actor)): return s.create_workspace(body,who)
+
+    @api.get("/workspaces/{identifier}")
+    def get_workspace(identifier:str,s=Depends(service)): return s.get_workspace(identifier)
+
+    @api.patch("/workspaces/{identifier}")
+    def patch_workspace(identifier:str,body:WorkspacePatch,s=Depends(service),who=Depends(actor)): return s.patch_workspace(identifier,body,who)
+
+    @api.post("/workspaces/{identifier}/archive")
+    def archive_workspace(identifier:str,s=Depends(service),who=Depends(actor)): return s.archive_workspace(identifier,who)
+
     @api.get("/search-spaces")
-    def list_search_spaces(s=Depends(service)): return s.list_search_spaces()
+    def list_search_spaces(workspace_id:str|None=None,s=Depends(service)): return s.list_search_spaces(workspace_id)
 
     @api.post("/search-spaces", status_code=201)
-    def create_search_space(body:SearchSpaceDefinition,s=Depends(service),who=Depends(actor)): return s.create_search_space(body,who)
+    def create_search_space(body:SearchSpaceDefinition,workspace_id:str|None=None,s=Depends(service),who=Depends(actor)): return s.create_search_space(body,who,workspace_id)
 
     @api.get("/search-spaces/{identifier}")
     def get_search_space(identifier:str,s=Depends(service)): return s.get_search_space(identifier)
@@ -98,11 +113,11 @@ def router(dataset_loader, datasets_list):
     def models(): return [{"id":k,**v,"status":"implemented" if is_available(k) else "requires_package"} for k,v in MODEL_REGISTRY.items()]
 
     @api.get("/experiments")
-    def list_experiments(q:str="",status:str|None=None,model:str|None=None,optimizer:str|None=None,tag:str|None=None,s=Depends(service)):
-        return s.list(q,status,model,optimizer,tag)
+    def list_experiments(q:str="",status:str|None=None,model:str|None=None,optimizer:str|None=None,tag:str|None=None,workspace_id:str|None=None,s=Depends(service)):
+        return s.list(q,status,model,optimizer,tag,workspace_id)
 
     @api.post("/experiments",status_code=201)
-    def create(spec:ExperimentSpec,s=Depends(service),who=Depends(actor)): return s.create(spec,who)
+    def create(spec:ExperimentSpec,workspace_id:str|None=None,s=Depends(service),who=Depends(actor)): return s.create(spec,who,workspace_id=workspace_id)
 
     @api.post("/experiments/compare")
     def compare(body:CompareSpec,s=Depends(service),who=Depends(actor)):

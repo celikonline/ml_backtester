@@ -1,6 +1,8 @@
+import { getStoredWorkspaceId } from './ws-store';
 export const token=()=>sessionStorage.getItem('regimelab-token')||'';
 export const lang=()=>{try{const v=localStorage.getItem('regimelab.lang');return v==='en'?'en':'tr';}catch{return 'tr';}};
-export const headers=()=>({'Content-Type':'application/json','X-RegimeLab-Source':'WEB','Accept-Language':lang(),...(token()?{Authorization:`Bearer ${token()}`}:{})});
+export const workspaceId=()=>getStoredWorkspaceId()||'';
+export const headers=()=>({'Content-Type':'application/json','X-RegimeLab-Source':'WEB','Accept-Language':lang(),...(workspaceId()?{'X-Workspace-Id':workspaceId()}:{}),...(token()?{Authorization:`Bearer ${token()}`}:{})});
 export async function request<T>(path:string,method='GET',body?:unknown,extra?:Record<string,string>):Promise<T>{
   const response=await fetch(`/api/v1${path}`,{method,headers:{...headers(),...extra},body:body===undefined?undefined:JSON.stringify(body)});
   const value=await response.json();

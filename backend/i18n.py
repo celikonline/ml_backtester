@@ -72,6 +72,11 @@ EXACT = {
     "Seal bulunamadı.": "Seal not found.",
     "Geçersiz kılma nedeni gerekli (1–500 karakter).": "An invalidation reason is required (1–500 characters).",
     "Rotasyon nedeni gerekli (1–500 karakter).": "A rotation reason is required (1–500 characters).",
+    "Workspace bulunamadı.": "Workspace not found.",
+    "Arşivlenmiş workspace'e yazılamaz.": "Archived workspaces are read-only.",
+    "Varsayılan workspace arşivlenemez.": "The default workspace cannot be archived.",
+    "Workspace uyuşmazlığı.": "Workspace mismatch.",
+    "Search space bulunamadı.": "Search space not found.",
 }
 
 PREFIX = {

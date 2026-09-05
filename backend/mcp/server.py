@@ -19,6 +19,19 @@ async def call(method,path,body=None,key=None):
         return response.json()
 
 @mcp.tool()
+async def list_workspaces(include_archived:bool=False)->list:
+    return await call("GET",f"/workspaces?include_archived={str(include_archived).lower()}")
+
+@mcp.tool()
+async def get_workspace(workspace_id:str)->dict:
+    return await call("GET",f"/workspaces/{workspace_id}")
+
+@mcp.tool()
+async def create_workspace(name:str,description:str="",market:str="",base_currency:str="",timezone:str="UTC")->dict:
+    """Create a real workspace record; research scope switches to it explicitly."""
+    return await call("POST","/workspaces",{"name":name,"description":description,"market":market,"base_currency":base_currency,"timezone":timezone})
+
+@mcp.tool()
 async def create_experiment(specification:ExperimentSpec)->dict:
     """Create a draft using the same versioned specification as REST/UI; does not run."""
     return await call("POST","/experiments",specification.model_dump())
@@ -74,8 +87,9 @@ async def cancel_experiment(experiment_id:str)->dict:
     return await call("POST",f"/experiments/{experiment_id}/cancel")
 
 @mcp.tool()
-async def list_experiments()->list:
-    return await call("GET","/experiments")
+async def list_experiments(workspace_id:str|None=None)->list:
+    suffix=f"?workspace_id={workspace_id}" if workspace_id else ""
+    return await call("GET",f"/experiments{suffix}")
 
 @mcp.tool()
 async def get_experiment(experiment_id:str)->dict:

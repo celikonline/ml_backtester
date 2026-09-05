@@ -5,12 +5,14 @@ import {request,download,defaultSpec,headers,terminal} from './platform-api';
 import type {Spec,Experiment,Result,Comparison,Event,Generation,PlatformModel} from './platform-api';
 import type {Dataset} from './types';
 import { useLang } from './i18n';
+import { useWorkspace } from './workspace';
 import './platform.css';
 
 const palette=['#55dfb0','#8b91f3','#efb66c','#62b5ef','#e78fbe'];
 
 export default function ResearchPlatform({newRequest}:{newRequest:number}){
   const { t, lang, fmt, locale } = useLang();
+  const { currentId: wsId } = useWorkspace();
   const percent=(v:number)=>`${fmt(v*100)}%`;
   const stateLabel:Record<string,string>={DRAFT:t('rp.states.draft'),QUEUED:t('rp.states.queued'),DATA_PREPARATION:t('rp.states.prep'),FEATURE_ENGINEERING:t('rp.states.feat'),TRAINING:t('rp.states.train'),OPTIMIZING:t('rp.states.opt'),VALIDATING:t('rp.states.val'),TESTING:t('rp.states.test'),BACKTESTING:t('rp.states.bt'),ANALYZING:t('rp.states.analysis'),COMPLETED:t('rp.states.done'),FAILED:t('rp.states.fail'),CANCELLED:t('rp.states.cancel'),TIMEOUT:t('rp.states.timeout')};
   const initial=()=>structuredClone(defaultSpec);
@@ -31,7 +33,7 @@ export default function ResearchPlatform({newRequest}:{newRequest:number}){
   const fail=(e:unknown)=>setError(e instanceof Error?e.message:String(e));
   async function refresh(){setExperiments(await request<Experiment[]>('/experiments'));}
   async function load(){try{const [es,ds,fs,ms,cs,fm]=await Promise.all([request<Experiment[]>('/experiments'),request<Dataset[]>('/datasets'),request<{id:string;category:string}[]>('/features'),request<PlatformModel[]>('/models'),request<typeof capabilities>('/capabilities'),request<typeof families>('/feature-families')]);setExperiments(es);setDatasets(ds);setFeatures(fs);setModels(ms);setCapabilities(cs);setFamilies(fm);setError('');}catch(e){fail(e);}}
-  useEffect(()=>{load();},[]);
+  useEffect(()=>{setSelected(null);setResult(null);setChecked([]);setComparison(null);load();},[wsId]);
   useEffect(()=>{if(wizard)request<{id:string;category:string}[]>(`/features?dataset_id=${encodeURIComponent(spec.dataset_id)}`).then(setFeatures).catch(fail);},[wizard,spec.dataset_id]);
   useEffect(()=>{if(newRequest){setSpec(initial());setEditing(null);setStep(0);setWizard(true);}},[newRequest]);
   useEffect(()=>{if(wizard&&!dialog.current?.open)dialog.current?.showModal();if(!wizard&&dialog.current?.open)dialog.current.close();},[wizard]);

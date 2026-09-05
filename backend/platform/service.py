@@ -15,9 +15,13 @@ from sqlalchemy import select, update, func
 from sqlalchemy.exc import IntegrityError
 
 from backend.engine import read_prices
-from .db import connect, migrate, snapshots, experiments, runs, events, audits, test_seals, test_access_events, research_budgets, research_trial_events, experiment_edges, search_spaces, optimization_candidates, feature_evaluations, feature_stability_runs, ROOT, STORAGE
-from .schema import ExperimentSpec, SearchSpaceDefinition, DomainError, POLICY, STAGES, TERMINAL, RESEARCH_BUDGET, check_policy, estimate_research_risk
+from .db import connect, migrate, snapshots, experiments, runs, events, audits, test_seals, test_access_events, research_budgets, research_trial_events, experiment_edges, search_spaces, optimization_candidates, feature_evaluations, feature_stability_runs, workspaces, ROOT, STORAGE
+from .schema import ExperimentSpec, SearchSpaceDefinition, WorkspaceCreate, WorkspacePatch, DomainError, POLICY, STAGES, TERMINAL, RESEARCH_BUDGET, check_policy, estimate_research_risk
+from .scope import workspace_scope
 from .families import family_for_column
+
+
+DEFAULT_WORKSPACE_CODE = "WS-DEFAULT"
 
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -75,6 +79,77 @@ class ExperimentService:
     def _latest_seal(self, con, snapshot_id):
         return con.execute(select(test_seals).where(test_seals.c.test_dataset_id == snapshot_id).order_by(test_seals.c.epoch.desc())).mappings().first()
 
+    def _workspace_counts(self, con, workspace_id):
+        exp = con.execute(select(func.count()).select_from(experiments).where(experiments.c.workspace_id == workspace_id)).scalar()
+        ds = con.execute(select(func.count()).select_from(snapshots).where(snapshots.c.workspace_id == workspace_id)).scalar()
+        return {"experiment_count": exp, "dataset_count": ds}
+
+    def ensure_default_workspace(self):
+        with self.engine.begin() as con:
+            row = con.execute(select(workspaces).where(workspaces.c.code == DEFAULT_WORKSPACE_CODE)).mappings().first()
+            if not row:
+                row = {"id": uid(), "code": DEFAULT_WORKSPACE_CODE, "name": "EUR/USD Research", "description": "",
+                       "market": "FX", "base_currency": "USD", "timezone": "UTC", "owner": None,
+                       "is_archived": 0, "created_at": now(), "updated_at": now(), "archived_at": None}
+                con.execute(workspaces.insert().values(**row))
+            return dict(row)
+
+    def _resolve_workspace(self, con, workspace_id):
+        """Explicit id/code wins; otherwise the default workspace. Archived workspaces refuse new writes."""
+        if workspace_id:
+            row = con.execute(select(workspaces).where((workspaces.c.id == workspace_id) | (workspaces.c.code == workspace_id))).mappings().first()
+            if not row: raise DomainError("Workspace bulunamadı.", 404, "not_found")
+        else:
+            row = self.ensure_default_workspace()
+            row = con.execute(select(workspaces).where(workspaces.c.id == row["id"])).mappings().one()
+        if row["is_archived"]: raise DomainError("Arşivlenmiş workspace'e yazılamaz.", 422, "workspace_archived")
+        return dict(row)
+
+    def create_workspace(self, data, actor):
+        body = WorkspaceCreate.model_validate(data)
+        with self.engine.begin() as con:
+            record = {"id": uid(), "code": "WS-" + uuid.uuid4().hex[:8].upper(), "name": body.name.strip(),
+                      "description": body.description, "market": body.market, "base_currency": body.base_currency,
+                      "timezone": body.timezone, "owner": body.owner, "is_archived": 0,
+                      "created_at": now(), "updated_at": now(), "archived_at": None}
+            con.execute(workspaces.insert().values(**record))
+            self.audit(con, "workspace.create", record["id"], actor, {"code": record["code"], "name": record["name"]})
+            return {**record, **self._workspace_counts(con, record["id"])}
+
+    def list_workspaces(self, include_archived=False):
+        with self.engine.connect() as con:
+            query = select(workspaces).order_by(workspaces.c.created_at)
+            if not include_archived: query = query.where(workspaces.c.is_archived == 0)
+            return [{**dict(row), **self._workspace_counts(con, row["id"])} for row in con.execute(query).mappings()]
+
+    def get_workspace(self, identifier):
+        with self.engine.connect() as con:
+            row = con.execute(select(workspaces).where((workspaces.c.id == identifier) | (workspaces.c.code == identifier))).mappings().first()
+            if not row: raise DomainError("Workspace bulunamadı.", 404, "not_found")
+            return {**dict(row), **self._workspace_counts(con, row["id"])}
+
+    def patch_workspace(self, identifier, data, actor):
+        body = WorkspacePatch.model_validate(data)
+        with self.engine.begin() as con:
+            row = con.execute(select(workspaces).where((workspaces.c.id == identifier) | (workspaces.c.code == identifier))).mappings().first()
+            if not row: raise DomainError("Workspace bulunamadı.", 404, "not_found")
+            values = {k: v for k, v in body.model_dump().items() if v is not None}
+            if "name" in values: values["name"] = values["name"].strip()
+            if values:
+                values["updated_at"] = now()
+                con.execute(update(workspaces).where(workspaces.c.id == row["id"]).values(**values))
+            self.audit(con, "workspace.update", row["id"], actor, {"updated": sorted(values)})
+        return self.get_workspace(identifier)
+
+    def archive_workspace(self, identifier, actor):
+        with self.engine.begin() as con:
+            row = con.execute(select(workspaces).where((workspaces.c.id == identifier) | (workspaces.c.code == identifier))).mappings().first()
+            if not row: raise DomainError("Workspace bulunamadı.", 404, "not_found")
+            if row["code"] == DEFAULT_WORKSPACE_CODE: raise DomainError("Varsayılan workspace arşivlenemez.", 422, "workspace_archived")
+            con.execute(update(workspaces).where(workspaces.c.id == row["id"]).values(is_archived=1, archived_at=now(), updated_at=now()))
+            self.audit(con, "workspace.archive", row["id"], actor, {"code": row["code"]})
+        return self.get_workspace(identifier)
+
     def seal(self, snapshot_id):
         with self.engine.begin() as con:
             record = self._active_seal(con, snapshot_id)
@@ -121,24 +196,34 @@ class ExperimentService:
             self.audit(con, "seal.rotate", record["seal_id"], actor, {"test_dataset_id":snapshot_id, "epoch":record["epoch"], "reason":reason, "supersedes":latest["seal_id"]})
             return dict(record)
 
-    def create_search_space(self, definition, actor):
+    def create_search_space(self, definition, actor, workspace_id=None):
         definition=SearchSpaceDefinition.model_validate(definition)
-        record={"id":uid(),"name":definition.name,"version":1,"definition":definition.model_dump(),"owner":actor.get("id","local-user"),"created_at":now()}
         with self.engine.begin() as con:
-            con.execute(search_spaces.insert().values(**record)); self.audit(con,"search_space.create",record["id"],actor,{"name":record["name"]})
+            ws = self._resolve_workspace(con, workspace_id)
+            record={"id":uid(),"name":definition.name,"version":1,"definition":definition.model_dump(),"owner":actor.get("id","local-user"),"created_at":now(),"workspace_id":ws["id"]}
+            con.execute(search_spaces.insert().values(**record)); self.audit(con,"search_space.create",record["id"],actor,{"name":record["name"],"workspace_id":ws["id"]})
         return record
 
-    def list_search_spaces(self):
-        with self.engine.connect() as con: return [dict(row) for row in con.execute(select(search_spaces).where(search_spaces.c.archived_at.is_(None)).order_by(search_spaces.c.created_at.desc())).mappings()]
+    def list_search_spaces(self, workspace_id=None):
+        with self.engine.connect() as con:
+            stmt = select(search_spaces).where(search_spaces.c.archived_at.is_(None)).order_by(search_spaces.c.created_at.desc())
+            if workspace_id:
+                scope = con.execute(select(workspaces.c.id).where((workspaces.c.id==workspace_id)|(workspaces.c.code==workspace_id))).first()
+                if not scope: raise DomainError("Workspace bulunamadı.",404,"not_found")
+                stmt = stmt.where(search_spaces.c.workspace_id==scope[0])
+            return [dict(row) for row in con.execute(stmt).mappings()]
 
     def get_search_space(self, identifier):
         with self.engine.connect() as con: row=con.execute(select(search_spaces).where(search_spaces.c.id==identifier)).mappings().first()
         if not row: raise DomainError("Search space bulunamadı.",404,"not_found")
         return dict(row)
 
-    def _apply_search_space(self, spec):
+    def _apply_search_space(self, spec, workspace_id):
         if not spec.search_space_id: return spec
-        space=SearchSpaceDefinition.model_validate(self.get_search_space(spec.search_space_id)["definition"])
+        stored = self.get_search_space(spec.search_space_id)
+        if stored.get("workspace_id") and stored["workspace_id"] != workspace_id:
+            raise DomainError("Search space bulunamadı.",404,"not_found")
+        space=SearchSpaceDefinition.model_validate(stored["definition"])
         features=spec.features.model_copy(update={"groups":space.feature_groups,"names":space.features})
         optimization=spec.optimization.model_copy(update={"min_features":space.min_features,"max_features":space.max_features,"hyperparameters":space.hyperparameters,"max_drawdown":space.max_drawdown,"thresholds_bps":space.thresholds_bps})
         return spec.model_copy(update={"features":features,"models":space.models,"optimization":optimization,"regime_states":space.regime_states})
@@ -160,7 +245,7 @@ class ExperimentService:
     def log(self, con, exp_id, run_id, kind, payload):
         con.execute(events.insert().values(experiment_id=exp_id,run_id=run_id,type=kind,payload=payload,created_at=now()))
 
-    def snapshot(self, dataset_id):
+    def snapshot(self, dataset_id, workspace_id=None):
         df,name,demo = self.dataset_loader(dataset_id)
         raw = df.to_csv().encode("utf-8")
         digest = hashlib.sha256(raw).hexdigest()
@@ -182,7 +267,10 @@ class ExperimentService:
                 "revision":"not supplied","survivorship":"not applicable to fixed EURUSD series",
                 "dst_audit":"source timezone/release provenance unavailable","gap_provenance":"weekend and missing-source gaps not distinguished"}
         record = {"id":identifier,"sha256":digest,"path":str(path.relative_to(self.storage)),"details":meta,"created_at":now()}
-        with self.engine.begin() as con: con.execute(snapshots.insert().values(**record))
+        with self.engine.begin() as con:
+            ws = self._resolve_workspace(con, workspace_id)
+            record["workspace_id"] = ws["id"]
+            con.execute(snapshots.insert().values(**record))
         return record
 
     def get_snapshot(self, identifier):
@@ -201,9 +289,17 @@ class ExperimentService:
         if not path.is_relative_to(self.storage): raise DomainError("Geçersiz artifact yolu.",400)
         return path
 
-    def create(self, spec, actor, parent_id=None, snapshot_id=None):
-        spec = self._apply_search_space(ExperimentSpec.model_validate(spec))
-        snapshot = self.get_snapshot(snapshot_id) if snapshot_id else self.snapshot(spec.dataset_id)
+    def create(self, spec, actor, parent_id=None, snapshot_id=None, workspace_id=None):
+        spec = ExperimentSpec.model_validate(spec)
+        with self.engine.begin() as con:
+            ws = self._resolve_workspace(con, workspace_id or spec.workspace_id)
+        spec = self._apply_search_space(spec, ws["id"])
+        if snapshot_id:
+            snapshot = self.get_snapshot(snapshot_id)
+            if snapshot.get("workspace_id") and snapshot["workspace_id"] != ws["id"]:
+                raise DomainError("Snapshot bulunamadı.", 404, "not_found")
+        else:
+            snapshot = self.snapshot(spec.dataset_id, ws["id"])
         check_policy(spec,snapshot["details"]["rows"])
         risk = self.estimate(spec, snapshot["id"])
         if risk["risk_score"] >= RESEARCH_BUDGET["risk_reject_at"]:
@@ -212,7 +308,7 @@ class ExperimentService:
         names = {f["id"] for f in registry(self.load_snapshot(snapshot["id"]))}
         if not set(spec.features.names)<=names: raise DomainError("Bilinmeyen özellik adı.",422,"invalid_feature")
         identifier = uid()
-        record = {"id":identifier,"code":f"EXP-{datetime.now().year}-{identifier[:8].upper()}","parent_id":parent_id,"snapshot_id":snapshot["id"],
+        record = {"id":identifier,"code":f"EXP-{datetime.now().year}-{identifier[:8].upper()}","parent_id":parent_id,"snapshot_id":snapshot["id"],"workspace_id":ws["id"],
                   "name":spec.name,"status":"DRAFT","specification":spec.model_dump(),"owner":actor.get("id","local-user"),"created_at":now(),"updated_at":now()}
         with self.engine.begin() as con:
             con.execute(experiments.insert().values(**record))
@@ -225,23 +321,33 @@ class ExperimentService:
                 parent_seal=con.execute(select(test_seals).where(test_seals.c.test_dataset_id==snapshot["id"]).order_by(test_seals.c.epoch.desc())).mappings().first()
                 relation="POST_TEST_ITERATION_FROM" if parent_seal["access_count"] else "CLONED_FROM"
                 con.execute(experiment_edges.insert().values(from_experiment_id=parent_id,to_experiment_id=identifier,relation_type=relation,reason_code="shared_sealed_dataset",actor_type=actor.get("source","REST"),change_summary={"seal_id":parent_seal["seal_id"]},created_at=now()))
-            self.audit(con,"experiment.clone" if parent_id else "experiment.create",identifier,actor,{"parent_id":parent_id,"snapshot_hash":snapshot["sha256"]})
+            self.audit(con,"experiment.clone" if parent_id else "experiment.create",identifier,actor,{"parent_id":parent_id,"snapshot_hash":snapshot["sha256"],"workspace_id":ws["id"]})
             self.log(con,identifier,None,"experiment.created",{"status":"DRAFT"})
         return self.get(identifier)
 
-    def get(self, identifier):
+    def get(self, identifier, workspace_id=None):
         with self.engine.connect() as con:
             row = con.execute(select(experiments).where((experiments.c.id==identifier)|(experiments.c.code==identifier))).mappings().first()
             if not row: raise DomainError("Deney bulunamadı.",404,"not_found")
             item = dict(row)
+            requested = workspace_id or workspace_scope.get()
+            if requested and item.get("workspace_id") != requested:
+                scope_row = con.execute(select(workspaces.c.id).where((workspaces.c.id==requested)|(workspaces.c.code==requested))).first()
+                if not scope_row or scope_row[0] != item.get("workspace_id"):
+                    raise DomainError("Deney bulunamadı.",404,"not_found")
             run = con.execute(select(runs).where(runs.c.experiment_id==item["id"])).mappings().first()
             item["run"] = dict(run) if run else None
         item["snapshot"] = self.get_snapshot(item["snapshot_id"])
         return item
 
-    def list(self, query="", status=None, model=None, optimizer=None, tag=None):
+    def list(self, query="", status=None, model=None, optimizer=None, tag=None, workspace_id=None):
         with self.engine.connect() as con:
-            rows = con.execute(select(experiments.c.id).order_by(experiments.c.created_at.desc())).scalars().all()
+            stmt = select(experiments.c.id).order_by(experiments.c.created_at.desc())
+            if workspace_id:
+                scope = con.execute(select(workspaces.c.id).where((workspaces.c.id==workspace_id)|(workspaces.c.code==workspace_id))).first()
+                if not scope: raise DomainError("Workspace bulunamadı.",404,"not_found")
+                stmt = stmt.where(experiments.c.workspace_id==scope[0])
+            rows = con.execute(stmt).scalars().all()
         items = [self.get(identifier) for identifier in rows]
         return [i for i in items if (not query or query.casefold() in (i["name"]+i["code"]).casefold())
                 and (not status or i["status"]==status) and (not model or model in i["specification"]["models"])
@@ -254,12 +360,14 @@ class ExperimentService:
         if spec.dataset_id != parent["specification"]["dataset_id"]:
             raise DomainError("Klon aynı snapshot'ı kullanır. Başka veri için yeni deney oluşturun.",422)
         spec = spec.model_copy(update={"name":request.name or (spec.name[:100]+" · klon")})
-        return self.create(spec,actor,parent["id"],parent["snapshot_id"])
+        return self.create(spec,actor,parent["id"],parent["snapshot_id"],parent["workspace_id"])
 
     def patch(self, identifier, spec, actor):
         item = self.get(identifier)
         if item["status"]!="DRAFT": raise DomainError("Çalıştırılmış deney sabittir; klon oluşturun.",409,"frozen_experiment")
         if spec.dataset_id!=item["specification"]["dataset_id"]: raise DomainError("Veri değişikliği yeni deney gerektirir.",422)
+        if spec.workspace_id and spec.workspace_id not in (item["workspace_id"],):
+            raise DomainError("Workspace uyuşmazlığı.",422,"workspace_mismatch")
         check_policy(spec,item["snapshot"]["details"]["rows"])
         with self.engine.begin() as con:
             changed=con.execute(update(experiments).where(experiments.c.id==item["id"],experiments.c.status=="DRAFT").values(name=spec.name,specification=spec.model_dump(),updated_at=now()))

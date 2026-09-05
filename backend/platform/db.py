@@ -8,13 +8,24 @@ DEFAULT_URL = "sqlite:///" + (STORAGE / "registry.sqlite3").as_posix()
 metadata = MetaData()
 snapshots = Table("dataset_snapshots", metadata,
     Column("id", String(64), primary_key=True), Column("sha256", String(64), nullable=False),
-    Column("path", Text, nullable=False), Column("details", JSON, nullable=False), Column("created_at", String(40), nullable=False))
+    Column("path", Text, nullable=False), Column("details", JSON, nullable=False), Column("created_at", String(40), nullable=False),
+    Column("workspace_id", String(36), ForeignKey("workspaces.id")))
+Index("ix_snapshots_workspace_id", snapshots.c.workspace_id)
+workspaces = Table("workspaces", metadata,
+    Column("id", String(36), primary_key=True), Column("code", String(24), unique=True, nullable=False),
+    Column("name", String(120), nullable=False), Column("description", Text, nullable=False, default=""),
+    Column("market", String(16), nullable=False, default=""), Column("base_currency", String(8), nullable=False, default=""),
+    Column("timezone", String(40), nullable=False, default="UTC"), Column("owner", String(120)),
+    Column("is_archived", Integer, nullable=False, default=0),
+    Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False), Column("archived_at", String(40)))
 experiments = Table("experiments", metadata,
     Column("id", String(36), primary_key=True), Column("code", String(40), unique=True, nullable=False),
     Column("parent_id", String(36), ForeignKey("experiments.id")), Column("snapshot_id", String(64), ForeignKey("dataset_snapshots.id"), nullable=False),
+    Column("workspace_id", String(36), ForeignKey("workspaces.id")),
     Column("name", String(120), nullable=False), Column("status", String(32), nullable=False),
     Column("specification", JSON, nullable=False), Column("owner", String(120), nullable=False),
     Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False))
+Index("ix_experiments_workspace_id", experiments.c.workspace_id)
 runs = Table("experiment_runs", metadata,
     Column("id", String(36), primary_key=True), Column("experiment_id", String(36), ForeignKey("experiments.id"), unique=True, nullable=False),
     Column("idempotency_key", String(200), unique=True, nullable=False), Column("status", String(32), nullable=False),
@@ -50,7 +61,8 @@ experiment_edges = Table("experiment_edges", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True), Column("from_experiment_id", String(36), ForeignKey("experiments.id"), nullable=False),
     Column("to_experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("relation_type", String(40), nullable=False), Column("reason_code", String(80)), Column("actor_type", String(40), nullable=False), Column("change_summary", JSON, nullable=False), Column("created_at", String(40), nullable=False))
 search_spaces = Table("search_space_definitions", metadata,
-    Column("id", String(36), primary_key=True), Column("name", String(120), nullable=False), Column("version", Integer, nullable=False), Column("definition", JSON, nullable=False), Column("owner", String(120), nullable=False), Column("created_at", String(40), nullable=False), Column("archived_at", String(40)))
+    Column("id", String(36), primary_key=True), Column("name", String(120), nullable=False), Column("version", Integer, nullable=False), Column("definition", JSON, nullable=False), Column("owner", String(120), nullable=False), Column("created_at", String(40), nullable=False), Column("archived_at", String(40)), Column("workspace_id", String(36), ForeignKey("workspaces.id")))
+Index("ix_spaces_workspace_id", search_spaces.c.workspace_id)
 optimization_candidates = Table("optimization_candidates", metadata,
     Column("id", String(36), primary_key=True), Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("candidate_key", String(64), nullable=False), Column("generation", Integer), Column("genome", JSON, nullable=False), Column("metrics", JSON, nullable=False), Column("fitness", Float, nullable=False), Column("pareto_rank", Integer), Column("dominance_count", Integer, nullable=False, default=0), Column("decision", String(40), nullable=False), Column("artifact_ref", Text), Column("created_at", String(40), nullable=False))
 Index("ix_candidates_experiment", optimization_candidates.c.experiment_id, optimization_candidates.c.candidate_key, unique=True)

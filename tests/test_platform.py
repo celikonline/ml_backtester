@@ -151,6 +151,70 @@ def test_final_test_gate_rejects_burned_seal(tmp_path):
         service.close()
 
 
+def test_workspace_crud_archive_and_scoping(tmp_path):
+    from backend.platform.scope import workspace_scope
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "ws.db").as_posix(), storage=tmp_path / "ws")
+    actor = {"id": "tester", "source": "REST", "request_id": "ws"}
+    try:
+        default = service.get_workspace("WS-DEFAULT")
+        assert default["name"] == "EUR/USD Research"
+        ws = service.create_workspace({"name": "Crypto Research", "market": "CRYPTO"}, actor)
+        assert ws["code"].startswith("WS-") and ws["experiment_count"] == 0
+        assert service.patch_workspace(ws["id"], {"description": "d"}, actor)["description"] == "d"
+        with pytest.raises(DomainError, match="bulunamadı"):
+            service.get_workspace("WS-NOPE")
+        a = service.create(make_spec("in default"), actor)
+        assert a["workspace_id"] == default["id"]
+        b = service.create(make_spec("in crypto"), actor, workspace_id=ws["code"])
+        assert b["workspace_id"] == ws["id"] and b["snapshot"]["workspace_id"] == ws["id"]
+        with pytest.raises(DomainError, match="bulunamadı"):
+            service.create(make_spec("nope"), actor, workspace_id="WS-NOPE")
+        assert {e["id"] for e in service.list(workspace_id=ws["id"])} == {b["id"]}
+        assert len(service.list()) == 2
+        with pytest.raises(DomainError, match="bulunamadı"):
+            service.get(a["id"], workspace_id=ws["id"])
+        assert service.get(b["id"], workspace_id=ws["code"])["id"] == b["id"]
+        child = service.clone(b["id"], CloneSpec(name="c"), actor)
+        assert child["workspace_id"] == ws["id"]
+        service.archive_workspace(ws["id"], actor)
+        assert service.get_workspace(ws["id"])["is_archived"] == 1
+        assert all(w["id"] != ws["id"] for w in service.list_workspaces())
+        assert any(w["id"] == ws["id"] for w in service.list_workspaces(include_archived=True))
+        with pytest.raises(DomainError, match="Arşiv"):
+            service.create(make_spec("late"), actor, workspace_id=ws["id"])
+        with pytest.raises(DomainError, match="arşivlenemez"):
+            service.archive_workspace("WS-DEFAULT", actor)
+        token = workspace_scope.set(ws["id"])
+        try:
+            with pytest.raises(DomainError, match="bulunamadı"):
+                service.get(a["id"])
+            assert service.get(b["id"])["id"] == b["id"]
+        finally:
+            workspace_scope.reset(token)
+    finally:
+        service.close()
+
+
+def test_search_space_workspace_binding(tmp_path):
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "wss.db").as_posix(), storage=tmp_path / "wss")
+    actor = {"id": "tester", "source": "REST"}
+    definition = {"name": "ws-a space", "feature_groups": ["technical"], "features": ["return_1", "volatility_14", "momentum_14"],
+                  "min_features": 3, "max_features": 3, "models": ["ridge"], "thresholds_bps": [0, .5]}
+    try:
+        ws_a = service.create_workspace({"name": "A"}, actor)
+        ws_b = service.create_workspace({"name": "B"}, actor)
+        space = service.create_search_space(definition, actor, ws_a["id"])
+        assert space["workspace_id"] == ws_a["id"]
+        assert {s["id"] for s in service.list_search_spaces(ws_b["id"])} == set()
+        draft = make_spec("cross", "none").model_copy(update={"search_space_id": space["id"]})
+        with pytest.raises(DomainError, match="bulunamadı"):
+            service.create(draft, actor, workspace_id=ws_b["id"])
+        ok = service.create(draft, actor, workspace_id=ws_a["id"])
+        assert ok["specification"]["models"] == ["ridge"]
+    finally:
+        service.close()
+
+
 def test_policy_rejects_excessive_work(tmp_path):
     service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "x.db").as_posix(), storage=tmp_path / "a")
     try:

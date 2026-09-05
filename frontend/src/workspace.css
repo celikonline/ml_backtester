@@ -1,1 +1,8 @@
 .workspace{width:100%;text-align:left}.workspace:hover{background:#1b2531;border-color:#3a4a5d}
+.workspace-list{display:flex;flex-direction:column;gap:8px;margin:14px 0;max-height:260px;overflow:auto}
+.workspace-row{display:flex;align-items:center;gap:8px;border:1px solid #2a3646;border-radius:8px;padding:6px 6px 6px 12px}
+.workspace-row.current{border-color:#2d5146;background:#13302740}
+.workspace-row>button:first-child{flex:1;text-align:left;background:none;border:none;color:inherit;cursor:pointer;padding:6px}
+.workspace-row>button:first-child:disabled{cursor:default}
+.workspace-row b{display:block;font-size:13px}
+.workspace-row small{color:#8a9eb6;font-size:10px}

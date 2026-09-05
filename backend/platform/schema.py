@@ -94,6 +94,7 @@ class ExperimentSpec(Contract):
     market: Literal["FX"] = "FX"
     symbol: Literal["EURUSD"] = "EURUSD"
     dataset_id: str = Field("demo", max_length=80)
+    workspace_id: str | None = Field(None, max_length=36)
     timeframe: Literal["native", "10min", "1h", "4h", "1D"] = "native"
     features: FeatureSpec = Field(default_factory=FeatureSpec)
     models: list[Literal["ridge", "random_forest", "hist_gradient_boosting", "xgboost", "lightgbm"]] = Field(default_factory=lambda: ["ridge", "xgboost"], min_length=1, max_length=5)
@@ -122,6 +123,24 @@ class CompareSpec(Contract):
 class CloneSpec(Contract):
     name: str | None = Field(None, min_length=1, max_length=120)
     specification: ExperimentSpec | None = None
+
+
+class WorkspaceCreate(Contract):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field("", max_length=2000)
+    market: str = Field("", max_length=16)
+    base_currency: str = Field("", max_length=8)
+    timezone: str = Field("UTC", max_length=40)
+    owner: str | None = Field(None, max_length=120)
+
+
+class WorkspacePatch(Contract):
+    name: str | None = Field(None, min_length=1, max_length=120)
+    description: str | None = Field(None, max_length=2000)
+    market: str | None = Field(None, max_length=16)
+    base_currency: str | None = Field(None, max_length=8)
+    timezone: str | None = Field(None, max_length=40)
+    owner: str | None = Field(None, max_length=120)
 
 
 class DomainError(Exception):
