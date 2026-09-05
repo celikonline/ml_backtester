@@ -1,7 +1,7 @@
 # Kalan İşler — Handoff (2026-09-05)
 
 Bu dosya yeni pencerede devam etmek içindir. Repo: `D:\agentic\ml`, branch `main`.
-Son durum: `pytest` 49 passed, `vite build` yeşil.
+Son durum: `pytest` 64 passed, `vite build` yeşil.
 
 ## Kararlar (değiştirme)
 - Local-first: Vercel uyumluluk katmanı söküldü, deploy hedefi yok.
@@ -70,17 +70,26 @@ Son durum: `pytest` 49 passed, `vite build` yeşil.
    `max_worst_regime_drawdown` gate'iyle olur (ihlal → infeasible).
    Regimes sekmesinde en-iyi-aday rejim tablosu. Borç: inference-anında
    rejim-bazlı model/strateji yönlendirmesi yok (bilinçli; execution değişir).
-9. **Tatil takvimi + price-gap equity testi** — `audit_calendar`
-   (`backend/engine.py`) audit seviyesinde; resmi tatiller ve gap-jump testi yok.
+9. **Tatil takvimi + price-gap equity testi** — yapıldı: `fx_holidays_for_year`
+   (1 Oca, Good Friday, Easter Monday, 25/26 Ara + Cumartesi→Cuma/Pazar→Pzt
+   gözlenen gün, `backend/engine.py`); `audit_calendar` boşluğu
+   [önceki, güncel] aralığı tatil kapsıyorsa `holiday_gaps` sayar
+   (Pzt-dönüş ve tatil-haftasonu yanlış sınıflanmaz; reject yok, audit).
+   Golden testler: takvim tarihleri, tatil/haftasonu/kaynak-delik ayrımı,
+   +%2 haftasonu sıçramasının equity'den aynen geçişi (maliyetli + finansmanlı).
 
 ## P3 / v3 artıkları
-10. **DSL/prompt-to-spec, approval policy, RBAC** — MCP ince REST geçişi;
-    `request_test_unseal` yok; auth tek API key/localhost.
+10. **DSL/prompt-to-spec, approval policy, RBAC** — doğrulandı: MCP'de
+    `validate_experiment_spec` (`POST /research/estimate`: policy + maliyet +
+    risk, yaratmadan) zaten var; eksik kalan `request_test_unseal` onay akışı,
+    approval seviyeleri, auth tek API key/localhost (ürün kararı gerekir).
 11. **P3 fazları** — ALFRED/vintage veri, PSR/PBO, Optuna, TFT, Champion/
     Challenger, dağıtık worker: hepsi `planned` (`GET /capabilities`).
-12. **v3 artıkları** — legacy CSV listesi (`/api/datasets`) scope'suz;
-    `?workspace=` yerine `/w/{id}` path routing; audit tablosunda workspace
-    kolonu yok; tenant modeli yok.
+    Veri/altyapı gerektirir, girilmedi.
+12. **v3 artıkları** — yapıldı: audit tablosunda workspace kolonu
+    (migration 0011, details/scope'tan doldurulur, Activity'de WS sütunu).
+    Kalan: legacy CSV listesi (`/api/datasets`) scope'suz; `?workspace=`
+    yerine `/w/{id}` path routing; tenant modeli yok (ürün kararı gerekir).
 13. **Backend barındırma** — local-only kararıyla ertelendi; kalıcı kullanım
     gerekirse Render/Fly/Railway + frontend Vercel.
 

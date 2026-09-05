@@ -40,7 +40,9 @@ Index("ix_events_experiment_id", events.c.experiment_id, events.c.id)
 audits = Table("audit_logs", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True), Column("actor", String(120), nullable=False),
     Column("source", String(40), nullable=False), Column("operation", String(80), nullable=False), Column("entity_id", String(64)),
-    Column("request_id", String(64), nullable=False), Column("details", JSON, nullable=False), Column("created_at", String(40), nullable=False))
+    Column("request_id", String(64), nullable=False), Column("details", JSON, nullable=False), Column("created_at", String(40), nullable=False),
+    Column("workspace_id", String(36), ForeignKey("workspaces.id")))
+Index("ix_audits_workspace_id", audits.c.workspace_id)
 test_seals = Table("test_seals", metadata,
     Column("seal_id", String(36), primary_key=True), Column("test_dataset_id", String(64), ForeignKey("dataset_snapshots.id"), nullable=False),
     Column("access_count", Integer, nullable=False, default=0), Column("first_opened_at", String(40)),

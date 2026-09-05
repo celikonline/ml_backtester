@@ -40,7 +40,7 @@ Kabul ölçütü: Her deney, aday ve test erişimi araştırma defterine yazıl�
 - [x] `BacktestRealityConfig` şemasını ekle. (fixed/ohlc_range spread, komisyon, slippage, flat+long/short rollover, Wed triple; fill/latency/stop modelleri yok)
 - [x] Sabit/değişken bid-ask spread, komisyon ve slippage modellerini uygula. (validasyon ve final test aynı `merged_reality` yolunu kullanır; `tests/test_backtest_golden.py`)
 - [x] FX swap/rollover/financing maliyetlerini uygula. (long/short ayrımı + opsiyonel Çarşamba triple; tatil-gününe duyarlı tahakkuk yok)
-- [x] Timezone, DST, hafta sonu ve tatil takvimini doğrula. (`audit_calendar`: weekend/midweek gap ayrımı + kaynak timezone tespiti snapshot'a yazılır; reject yok, resmi tatil takvimi yok)
+- [x] Timezone, DST, hafta sonu ve tatil takvimini doğrula. (`audit_calendar`: weekend/midweek/holiday gap ayrımı + kaynak timezone tespiti snapshot'a yazılır; FX tatil seti: 1 Oca, Good Friday, Easter Monday, 25/26 Ara + gözlenen gün; reject yok)
 - [x] Signal timestamp ile executable price ayrımını engine seviyesinde koru. (`fx_backtest` imzası + curve `timestamp`/`signal_timestamp` ayrımı; golden testte sıralama doğrulanır)
 - [x] Pozisyon büyüklüğü, kaldıraç ve margin için MVP sınırlarını tanımla. (`exposure = max_leverage * max_position_fraction`, tek-bar -%100 floor + likidasyon sonrası flat; `fx_backtest` + golden testler)
 
@@ -120,8 +120,8 @@ Kabul ölçütü: HMM yalnızca açıklayıcı rapor olmaktan çıkar; model de�
 
 ### 12. MCP V2 araçları ve onay kuralları
 
-- [ ] `validate_experiment_spec`, `estimate_experiment_cost`, `estimate_research_risk` araçlarını ekle.
-- [ ] Search space, candidates, lineage, budget, seal, robustness ve feature stability araçlarını ekle.
+- [x] `validate_experiment_spec`, `estimate_experiment_cost`, `estimate_research_risk` araçlarını ekle. (`validate_experiment_spec` → `POST /research/estimate` politika+maliyet+risk döndürür; ayrı cost/risk aracı yok, tek endpoint ikisini de verir)
+- [x] Search space, candidates, lineage, budget, seal, robustness ve feature stability araçlarını ekle. (hepsi MCP'de; robustness ayrı rapor endpoint'i yok, cost-sensitivity + candidate metrikleriyle izlenir)
 - [ ] `request_test_unseal` doğrudan erişim vermesin; approval request oluştursun.
 - [ ] AUTO_READ, AUTO_CREATE_DRAFT, APPROVAL_REQUIRED_TO_RUN, AUTO_RUN_WITHIN_BUDGET ve human-required seviyelerini uygula.
 

@@ -592,6 +592,29 @@ def test_execute_research_reports_candidate_regimes(tmp_path):
     assert best["worst_regime_drawdown"] is not None and best["regime_coverage"] == pytest.approx(1.0)
 
 
+def test_audit_logs_carry_workspace_attribution(tmp_path):
+    from sqlalchemy import select
+    from backend.platform.db import audits
+    from backend.platform.scope import workspace_scope
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "audit.db").as_posix(), storage=tmp_path / "audit")
+    service.start(); actor={"id":"tester","source":"REST"}
+    try:
+        ws = service.create_workspace({"name": "Audited"}, actor)
+        exp = service.create(make_spec("audited", "none"), actor, workspace_id=ws["id"])
+        token = workspace_scope.set(ws["code"])
+        try:
+            service.patch_workspace(ws["id"], {"description": "scoped edit"}, actor)
+        finally:
+            workspace_scope.reset(token)
+        with service.engine.connect() as con:
+            rows = {(r["operation"], r["entity_id"]): r["workspace_id"] for r in con.execute(select(audits)).mappings()}
+        assert rows[("experiment.create", exp["id"])] == ws["id"]
+        assert rows[("workspace.update", ws["id"])] == ws["id"]
+        assert rows[("workspace.create", ws["id"])] == ws["id"]
+    finally:
+        service.close()
+
+
 def test_versioned_search_space_and_durable_candidate_registry(tmp_path):
     service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "x.db").as_posix(), storage=tmp_path / "a")
     service.start(); actor={"id":"tester","source":"REST"}

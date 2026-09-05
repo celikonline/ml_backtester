@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+from datetime import date
+
 import numpy as np
 import pandas as pd
 from hmmlearn.hmm import GaussianHMM
@@ -234,18 +236,73 @@ def fx_backtest(prediction, actual, reality, timestamps, threshold=0, high=None,
                          "liquidated": bool(liquidated)}
 
 
+def _easter_sunday(year):
+    """Anonymous Gregorian computus; no calendar dependency for Easter-based FX holidays."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    return date(year, month, day + 1)
+
+
+def fx_holidays_for_year(year):
+    """Major OTC-spot-FX non-trading days: Jan 1, Good Friday, Easter Monday,
+    Dec 25/26, with Sat→Friday / Sun→Monday observance (US convention).
+
+    Venue calendars differ (e.g. UK Boxing-Day observance); this is the audit
+    baseline so gaps on listed days are not mistaken for missing source bars.
+    """
+    from datetime import timedelta
+    fixed = [date(year, 1, 1), date(year, 12, 25), date(year, 12, 26)]
+    easter = _easter_sunday(year)
+    movable = [easter - timedelta(days=2), easter + timedelta(days=1)]
+    out = set()
+    for day in fixed + movable:
+        if day.weekday() == 5:
+            out.add(day - timedelta(days=1))
+        elif day.weekday() == 6:
+            out.add(day + timedelta(days=1))
+        else:
+            out.add(day)
+    return out
+
+
 def audit_calendar(df):
-    """Classify bar gaps: weekend sessions vs missing-source bars. Audit only, never rejects."""
+    """Classify bar gaps: weekend sessions, listed FX holidays, or missing-source bars.
+
+    A gap counts as a holiday gap when its [previous, current] interval covers
+    a listed holiday (so Easter-Monday resumption is not misread as a holiday
+    gap, and holiday weekends are not misread as plain weekends). Audit only,
+    never rejects.
+    """
     index = pd.DatetimeIndex(df.index).tz_convert("UTC")
     deltas = index.to_series().diff().dropna()
     median = float(deltas.median().total_seconds()) if len(deltas) else 0.0
     gaps = deltas[deltas > deltas.median() * 1.5] if len(deltas) else deltas[:0]
-    weekend_gaps = sum(1 for ts in gaps.index if ts.dayofweek == 0)
+    years = {ts.year for ts in index} if len(index) else set()
+    holidays = set().union(*(fx_holidays_for_year(y) for y in years)) if years else set()
+    weekend_gaps = holiday_gaps = 0
+    for ts, delta in gaps.items():
+        prev = ts - delta
+        if any(prev.date() <= day <= ts.date() for day in holidays):
+            holiday_gaps += 1
+        elif ts.dayofweek == 0:
+            weekend_gaps += 1
     weekend_bars = int(((index.dayofweek == 5) | (index.dayofweek == 6)).sum())
+    in_range = sorted(day.isoformat() for day in holidays
+                      if len(index) and index[0].date() <= day <= index[-1].date())
     return {"source_timezone": df.attrs.get("source_timezone", "unknown"),
             "median_bar_seconds": median, "gap_bars": int(len(gaps)),
-            "weekend_gaps": int(weekend_gaps), "midweek_gaps": int(len(gaps) - weekend_gaps),
-            "weekend_bars": weekend_bars}
+            "weekend_gaps": int(weekend_gaps), "holiday_gaps": int(holiday_gaps),
+            "midweek_gaps": int(len(gaps) - weekend_gaps - holiday_gaps),
+            "weekend_bars": weekend_bars, "calendar_name": "FX majors (fixed + Easter-based, US observance)",
+            "holidays_in_range": in_range}
 
 
 def metrics(ret, signal, annual):

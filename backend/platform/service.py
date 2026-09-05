@@ -215,7 +215,7 @@ class ExperimentService:
                       "timezone": body.timezone, "owner": body.owner, "is_archived": 0,
                       "created_at": now(), "updated_at": now(), "archived_at": None}
             con.execute(workspaces.insert().values(**record))
-            self.audit(con, "workspace.create", record["id"], actor, {"code": record["code"], "name": record["name"]})
+            self.audit(con, "workspace.create", record["id"], actor, {"code": record["code"], "name": record["name"], "workspace_id": record["id"]})
             return {**record, **self._workspace_counts(con, record["id"])}
 
     def list_workspaces(self, include_archived=False):
@@ -343,8 +343,14 @@ class ExperimentService:
         return seal
 
     def audit(self, con, operation, entity, actor, details=None):
+        details = details or {}
+        workspace_id = None
+        candidate = details.get("workspace_id") or workspace_scope.get()
+        if candidate:
+            row = con.execute(select(workspaces.c.id).where((workspaces.c.id == candidate) | (workspaces.c.code == candidate))).first()
+            workspace_id = row[0] if row else None
         con.execute(audits.insert().values(actor=actor.get("id","local-user"), source=actor.get("source","REST"),operation=operation,
-            entity_id=entity,request_id=actor.get("request_id",uid()),details=details or {},created_at=now()))
+            entity_id=entity,request_id=actor.get("request_id",uid()),details=details,workspace_id=workspace_id,created_at=now()))
 
     def log(self, con, exp_id, run_id, kind, payload):
         con.execute(events.insert().values(experiment_id=exp_id,run_id=run_id,type=kind,payload=payload,created_at=now()))
@@ -371,7 +377,7 @@ class ExperimentService:
                 "availability_verified":verified,"availability_unverified":unverified,"late_availability_rows":late,
                 "revision":"not supplied","survivorship":"not applicable to fixed EURUSD series",
                 "dst_audit":f"source timestamps {calendar['source_timezone']}, normalized to UTC on ingest",
-                "gap_provenance":f"{calendar['weekend_gaps']} weekend gaps, {calendar['midweek_gaps']} midweek gaps, {calendar['weekend_bars']} weekend bars",
+                "gap_provenance":f"{calendar['weekend_gaps']} weekend gaps, {calendar['holiday_gaps']} holiday gaps, {calendar['midweek_gaps']} midweek gaps, {calendar['weekend_bars']} weekend bars",
                 "calendar":calendar}
         record = {"id":identifier,"sha256":digest,"path":str(path.relative_to(self.storage)),"details":meta,"created_at":now()}
         with self.engine.begin() as con:

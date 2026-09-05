@@ -8,8 +8,9 @@ as a pricing change, not a test fix.
 import numpy as np
 import pandas as pd
 import pytest
+from datetime import date
 
-from backend.engine import audit_calendar, demo_prices, fx_backtest, read_prices
+from backend.engine import audit_calendar, demo_prices, fx_backtest, fx_holidays_for_year, read_prices
 from backend.platform.research import execute_research
 from backend.platform.schema import BacktestRealityConfig, ExperimentSpec
 
@@ -207,6 +208,72 @@ def test_merged_reality_carries_leverage_and_honors_legacy_top_level():
     merged = merged_reality(explicit)
     assert merged.max_leverage == pytest.approx(3.0)
     assert merged.max_position_fraction == pytest.approx(0.5)
+
+
+def test_fx_holiday_calendar_lists_known_dates():
+    holidays_2023 = fx_holidays_for_year(2023)
+    assert date(2023, 4, 7) in holidays_2023  # Good Friday
+    assert date(2023, 4, 10) in holidays_2023  # Easter Monday
+    assert date(2023, 1, 2) in holidays_2023  # Jan 1 Sunday -> observed Monday
+    assert date(2023, 1, 1) not in holidays_2023
+    assert date(2023, 12, 25) in holidays_2023 and date(2023, 12, 26) in holidays_2023
+    holidays_2022 = fx_holidays_for_year(2022)
+    assert date(2022, 12, 26) in holidays_2022  # Dec 25 Sunday -> observed Monday
+    assert date(2022, 12, 25) not in holidays_2022
+
+
+def hourly_frame(start, end, drop_dates=()):
+    idx = pd.date_range(start, end, freq="h", tz="UTC")
+    idx = idx[~idx.normalize().isin(pd.DatetimeIndex(drop_dates, tz="UTC"))]
+    df = pd.DataFrame({"open": 1.08, "high": 1.0810, "low": 1.0790, "close": 1.08},
+                      index=idx.rename("timestamp"))
+    df.attrs["source_timezone"] = "offset-aware"
+    return df
+
+
+def test_audit_separates_holiday_weekend_and_source_gaps():
+    christmas = hourly_frame("2023-12-20T00:00", "2023-12-29T23:00",
+                             drop_dates=["2023-12-23", "2023-12-24", "2023-12-25", "2023-12-26", "2023-12-30"])
+    report = audit_calendar(christmas)
+    # Single Fri 22 23:00 -> Wed 27 00:00 gap covering the holiday: not a weekend gap.
+    assert report["gap_bars"] == 1 and report["holiday_gaps"] == 1
+    assert report["weekend_gaps"] == 0 and report["midweek_gaps"] == 0
+    assert "2023-12-25" in report["holidays_in_range"] and "2023-12-26" in report["holidays_in_range"]
+    january = hourly_frame("2023-01-02T00:00", "2023-01-13T23:00",
+                           drop_dates=["2023-01-07", "2023-01-08", "2023-01-14", "2023-01-15"])
+    report = audit_calendar(january)
+    # Fri Jan 6 -> Mon Jan 9 covers only Sat/Sun: plain weekend, even though
+    # the observed Jan-2 holiday sits in range without causing any gap.
+    assert report["weekend_gaps"] == 1 and report["holiday_gaps"] == 0 and report["midweek_gaps"] == 0
+    assert "2023-01-02" in report["holidays_in_range"]
+    holed = january.drop(january.index[30:33])
+    assert audit_calendar(holed)["midweek_gaps"] == 1
+
+
+def test_price_gap_jump_flows_exactly_through_equity():
+    ts = hours("2024-01-04T23:00", "2024-01-05T00:00", "2024-01-05T01:00",
+               "2024-01-08T00:00", "2024-01-08T01:00")
+    actual = np.array([0.001, -0.0005, 0.002, 0.02, 0.0005])  # +2% weekend jump, no bars inside
+    ret, signal, summary = fx_backtest([1, 1, 1, 1, 1], actual, reality(), ts)
+    assert signal.tolist() == [1, 1, 1, 1, 1]
+    # turnover [1, 0, 0, 0, 1 final exit] at zero cost: the jump passes through untouched.
+    assert ret.tolist() == pytest.approx(actual.tolist())
+    assert float(np.prod(1 + ret)) == pytest.approx(1.001 * 0.9995 * 1.002 * 1.02 * 1.0005)
+    assert summary["margin_calls"] == 0 and summary["liquidated"] is False
+    frame = pd.DataFrame({"open": 1.08, "high": 1.09, "low": 1.07, "close": 1.08},
+                         index=ts.rename("timestamp"))
+    frame.attrs["source_timezone"] = "offset-aware"
+    audit = audit_calendar(frame)
+    assert audit["gap_bars"] == 1 and audit["weekend_gaps"] == 1 and audit["holiday_gaps"] == 0
+
+
+def test_price_gap_jump_with_costs_and_weekend_financing():
+    ts = hours("2024-01-05T20:00", "2024-01-08T00:00")
+    ret, _, summary = fx_backtest([1, 1], [0.001, 0.02],
+                                  reality(spread_bps=2, rollover_bps_per_day=2), ts)
+    # one-way 1 bp on turnover [1, 1]; 52-hour financing on the Monday bar.
+    assert ret.tolist() == pytest.approx([0.001 - 0.0001, 0.02 - 0.0001 - (52 / 24 * 2) / 10000])
+    assert summary["financing_bps"] == pytest.approx(52 / 24 * 2)
 
 
 def test_validation_and_final_test_share_reality_model(tmp_path):
