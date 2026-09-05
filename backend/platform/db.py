@@ -30,6 +30,33 @@ audits = Table("audit_logs", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True), Column("actor", String(120), nullable=False),
     Column("source", String(40), nullable=False), Column("operation", String(80), nullable=False), Column("entity_id", String(64)),
     Column("request_id", String(64), nullable=False), Column("details", JSON, nullable=False), Column("created_at", String(40), nullable=False))
+test_seals = Table("test_seals", metadata,
+    Column("seal_id", String(36), primary_key=True), Column("test_dataset_id", String(64), ForeignKey("dataset_snapshots.id"), unique=True, nullable=False),
+    Column("access_count", Integer, nullable=False, default=0), Column("first_opened_at", String(40)),
+    Column("invalidated_at", String(40)), Column("invalidation_reason", Text), Column("created_at", String(40), nullable=False))
+test_access_events = Table("test_access_events", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True), Column("seal_id", String(36), ForeignKey("test_seals.seal_id"), nullable=False),
+    Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("run_id", String(36), ForeignKey("experiment_runs.id")),
+    Column("actor", String(120), nullable=False), Column("purpose", String(80), nullable=False), Column("created_at", String(40), nullable=False))
+research_budgets = Table("research_budgets", metadata,
+    Column("id", String(120), primary_key=True), Column("limits", JSON, nullable=False), Column("created_at", String(40), nullable=False), Column("updated_at", String(40), nullable=False))
+research_trial_events = Table("research_trial_events", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True), Column("budget_id", String(120), ForeignKey("research_budgets.id"), nullable=False),
+    Column("experiment_id", String(36), ForeignKey("experiments.id")), Column("event_type", String(80), nullable=False),
+    Column("quantity", Integer, nullable=False, default=1), Column("details", JSON, nullable=False), Column("created_at", String(40), nullable=False))
+experiment_edges = Table("experiment_edges", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True), Column("from_experiment_id", String(36), ForeignKey("experiments.id"), nullable=False),
+    Column("to_experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("relation_type", String(40), nullable=False), Column("reason_code", String(80)), Column("actor_type", String(40), nullable=False), Column("change_summary", JSON, nullable=False), Column("created_at", String(40), nullable=False))
+search_spaces = Table("search_space_definitions", metadata,
+    Column("id", String(36), primary_key=True), Column("name", String(120), nullable=False), Column("version", Integer, nullable=False), Column("definition", JSON, nullable=False), Column("owner", String(120), nullable=False), Column("created_at", String(40), nullable=False), Column("archived_at", String(40)))
+optimization_candidates = Table("optimization_candidates", metadata,
+    Column("id", String(36), primary_key=True), Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("candidate_key", String(64), nullable=False), Column("generation", Integer), Column("genome", JSON, nullable=False), Column("metrics", JSON, nullable=False), Column("fitness", Float, nullable=False), Column("pareto_rank", Integer), Column("dominance_count", Integer, nullable=False, default=0), Column("decision", String(40), nullable=False), Column("artifact_ref", Text), Column("created_at", String(40), nullable=False))
+Index("ix_candidates_experiment", optimization_candidates.c.experiment_id, optimization_candidates.c.candidate_key, unique=True)
+feature_evaluations = Table("feature_evaluations", metadata,
+    Column("id", String(36), primary_key=True), Column("experiment_id", String(36), ForeignKey("experiments.id"), nullable=False), Column("feature", String(160), nullable=False), Column("ic", Float, nullable=False), Column("sign_consistency", Float, nullable=False), Column("mutual_information", Float, nullable=False), Column("missingness", Float, nullable=False), Column("selected", Integer, nullable=False), Column("created_at", String(40), nullable=False))
+feature_stability_runs = Table("feature_stability_runs", metadata,
+    Column("id", String(36), primary_key=True), Column("feature_evaluation_id", String(36), ForeignKey("feature_evaluations.id"), nullable=False), Column("window_index", Integer, nullable=False), Column("rolling_ic", Float, nullable=False), Column("created_at", String(40), nullable=False))
+Index("ix_feature_evaluations_experiment", feature_evaluations.c.experiment_id, feature_evaluations.c.feature)
 
 
 def connect(url=None):

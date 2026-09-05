@@ -11,17 +11,25 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import Response, FileResponse
+from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .engine import demo_prices, describe, read_prices, run_experiment
+from .i18n import translate
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 DATA.mkdir(exist_ok=True)
 app = FastAPI(title="Regime Lab", version="1.0.0")
+
+
+@app.exception_handler(HTTPException)
+async def localized_http_error(request: Request, exc: HTTPException):
+    lang = request.headers.get("accept-language", "")
+    detail = translate(exc.detail, lang) if isinstance(exc.detail, str) else exc.detail
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
 pool = ThreadPoolExecutor(max_workers=1)
 lock = threading.Lock()
 jobs = {}

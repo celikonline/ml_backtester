@@ -15,8 +15,8 @@ from sqlalchemy import select, update, func
 from sqlalchemy.exc import IntegrityError
 
 from backend.engine import read_prices
-from .db import connect, migrate, snapshots, experiments, runs, events, audits, ROOT, STORAGE
-from .schema import ExperimentSpec, DomainError, POLICY, STAGES, TERMINAL, check_policy
+from .db import connect, migrate, snapshots, experiments, runs, events, audits, test_seals, test_access_events, research_budgets, research_trial_events, experiment_edges, search_spaces, optimization_candidates, feature_evaluations, feature_stability_runs, ROOT, STORAGE
+from .schema import ExperimentSpec, SearchSpaceDefinition, DomainError, POLICY, STAGES, TERMINAL, RESEARCH_BUDGET, check_policy, estimate_research_risk
 from .families import family_for_column
 
 
@@ -40,6 +40,73 @@ class ExperimentService:
         self.thread = None
         self.process = None
         if initialize: migrate(self.engine)
+
+    def _budget_usage(self, con, budget_id="global"):
+        rows = con.execute(select(research_trial_events.c.event_type, func.coalesce(func.sum(research_trial_events.c.quantity), 0)).where(research_trial_events.c.budget_id == budget_id).group_by(research_trial_events.c.event_type)).all()
+        values = {kind: int(quantity) for kind, quantity in rows}
+        return {"experiments": values.get("experiment_created", 0), "candidates": values.get("candidate_planned", 0),
+                "backtests": values.get("backtest_planned", 0), "sealed_test_accesses": values.get("sealed_test_opened", 0)}
+
+    def budget_status(self):
+        with self.engine.begin() as con:
+            if not con.execute(select(research_budgets.c.id).where(research_budgets.c.id == "global")).first():
+                con.execute(research_budgets.insert().values(id="global", limits=RESEARCH_BUDGET, created_at=now(), updated_at=now()))
+            return {"id":"global", "usage":self._budget_usage(con), "limits":RESEARCH_BUDGET}
+
+    def estimate(self, spec, snapshot_id=None):
+        spec = ExperimentSpec.model_validate(spec)
+        snapshot = self.get_snapshot(snapshot_id) if snapshot_id else None
+        rows = snapshot["details"]["rows"] if snapshot else POLICY["max_rows"]
+        return estimate_research_risk(spec, rows, self.budget_status()["usage"])
+
+    def _record_trial(self, con, event_type, quantity=1, experiment_id=None, details=None):
+        if not con.execute(select(research_budgets.c.id).where(research_budgets.c.id == "global")).first():
+            con.execute(research_budgets.insert().values(id="global", limits=RESEARCH_BUDGET, created_at=now(), updated_at=now()))
+        con.execute(research_trial_events.insert().values(budget_id="global", experiment_id=experiment_id, event_type=event_type, quantity=quantity, details=details or {}, created_at=now()))
+        con.execute(update(research_budgets).where(research_budgets.c.id == "global").values(updated_at=now()))
+
+    def seal(self, snapshot_id):
+        with self.engine.begin() as con:
+            record = con.execute(select(test_seals).where(test_seals.c.test_dataset_id == snapshot_id)).mappings().first()
+            if not record:
+                record = {"seal_id":uid(), "test_dataset_id":snapshot_id, "access_count":0, "created_at":now()}
+                con.execute(test_seals.insert().values(**record))
+            return dict(record)
+
+    def seal_status(self, snapshot_id):
+        return self.seal(snapshot_id)
+
+    def create_search_space(self, definition, actor):
+        definition=SearchSpaceDefinition.model_validate(definition)
+        record={"id":uid(),"name":definition.name,"version":1,"definition":definition.model_dump(),"owner":actor.get("id","local-user"),"created_at":now()}
+        with self.engine.begin() as con:
+            con.execute(search_spaces.insert().values(**record)); self.audit(con,"search_space.create",record["id"],actor,{"name":record["name"]})
+        return record
+
+    def list_search_spaces(self):
+        with self.engine.connect() as con: return [dict(row) for row in con.execute(select(search_spaces).where(search_spaces.c.archived_at.is_(None)).order_by(search_spaces.c.created_at.desc())).mappings()]
+
+    def get_search_space(self, identifier):
+        with self.engine.connect() as con: row=con.execute(select(search_spaces).where(search_spaces.c.id==identifier)).mappings().first()
+        if not row: raise DomainError("Search space bulunamadı.",404,"not_found")
+        return dict(row)
+
+    def _apply_search_space(self, spec):
+        if not spec.search_space_id: return spec
+        space=SearchSpaceDefinition.model_validate(self.get_search_space(spec.search_space_id)["definition"])
+        features=spec.features.model_copy(update={"groups":space.feature_groups,"names":space.features})
+        optimization=spec.optimization.model_copy(update={"min_features":space.min_features,"max_features":space.max_features,"hyperparameters":space.hyperparameters,"max_drawdown":space.max_drawdown,"thresholds_bps":space.thresholds_bps})
+        return spec.model_copy(update={"features":features,"models":space.models,"optimization":optimization,"regime_states":space.regime_states})
+
+    def _open_seal_for_final_test(self, con, item, run_id):
+        seal = con.execute(select(test_seals).where(test_seals.c.test_dataset_id == item["snapshot_id"])).mappings().one()
+        if seal["invalidated_at"]:
+            raise DomainError("Test seal'i geçersiz kılınmış; yeni temporal holdout oluşturun.", 409, "seal_invalidated")
+        # The worker may open a seal only at this exact frozen-candidate boundary.
+        con.execute(test_access_events.insert().values(seal_id=seal["seal_id"], experiment_id=item["id"], run_id=run_id, actor="worker", purpose="final_frozen_candidate_test", created_at=now()))
+        con.execute(update(test_seals).where(test_seals.c.seal_id == seal["seal_id"]).values(access_count=seal["access_count"] + 1, first_opened_at=seal["first_opened_at"] or now()))
+        self._record_trial(con, "sealed_test_opened", experiment_id=item["id"], details={"seal_id":seal["seal_id"], "run_id":run_id})
+        return seal
 
     def audit(self, con, operation, entity, actor, details=None):
         con.execute(audits.insert().values(actor=actor.get("id","local-user"), source=actor.get("source","REST"),operation=operation,
@@ -90,9 +157,12 @@ class ExperimentService:
         return path
 
     def create(self, spec, actor, parent_id=None, snapshot_id=None):
-        spec = ExperimentSpec.model_validate(spec)
+        spec = self._apply_search_space(ExperimentSpec.model_validate(spec))
         snapshot = self.get_snapshot(snapshot_id) if snapshot_id else self.snapshot(spec.dataset_id)
         check_policy(spec,snapshot["details"]["rows"])
+        risk = self.estimate(spec, snapshot["id"])
+        if risk["risk_score"] >= RESEARCH_BUDGET["risk_reject_at"]:
+            raise DomainError("Araştırma bütçesi/multiple-testing riski politika sınırını aşıyor.",422,"policy_rejected")
         from .research import registry
         names = {f["id"] for f in registry(self.load_snapshot(snapshot["id"]))}
         if not set(spec.features.names)<=names: raise DomainError("Bilinmeyen özellik adı.",422,"invalid_feature")
@@ -101,6 +171,13 @@ class ExperimentService:
                   "name":spec.name,"status":"DRAFT","specification":spec.model_dump(),"owner":actor.get("id","local-user"),"created_at":now(),"updated_at":now()}
         with self.engine.begin() as con:
             con.execute(experiments.insert().values(**record))
+            if not con.execute(select(test_seals.c.seal_id).where(test_seals.c.test_dataset_id == snapshot["id"])).first():
+                con.execute(test_seals.insert().values(seal_id=uid(), test_dataset_id=snapshot["id"], access_count=0, created_at=now()))
+            self._record_trial(con,"experiment_created",experiment_id=identifier,details={"risk":risk})
+            if parent_id:
+                parent_seal=con.execute(select(test_seals).where(test_seals.c.test_dataset_id==snapshot["id"])).mappings().one()
+                relation="POST_TEST_ITERATION_FROM" if parent_seal["access_count"] else "CLONED_FROM"
+                con.execute(experiment_edges.insert().values(from_experiment_id=parent_id,to_experiment_id=identifier,relation_type=relation,reason_code="shared_sealed_dataset",actor_type=actor.get("source","REST"),change_summary={"seal_id":parent_seal["seal_id"]},created_at=now()))
             self.audit(con,"experiment.clone" if parent_id else "experiment.create",identifier,actor,{"parent_id":parent_id,"snapshot_hash":snapshot["sha256"]})
             self.log(con,identifier,None,"experiment.created",{"status":"DRAFT"})
         return self.get(identifier)
@@ -152,7 +229,10 @@ class ExperimentService:
         if existing:
             if existing["experiment_id"]!=item["id"]: raise DomainError("Aynı anahtar başka bir deneyde kullanılmış.",409,"idempotency_conflict")
             return dict(existing)
-        estimate=check_policy(ExperimentSpec.model_validate(item["specification"]),item["snapshot"]["details"]["rows"])
+        spec=ExperimentSpec.model_validate(item["specification"])
+        estimate=check_policy(spec,item["snapshot"]["details"]["rows"])
+        risk=estimate_research_risk(spec,item["snapshot"]["details"]["rows"],self.budget_status()["usage"])
+        if risk["risk_score"] >= RESEARCH_BUDGET["risk_reject_at"]: raise DomainError("Araştırma bütçesi/multiple-testing riski politika sınırını aşıyor.",422,"policy_rejected")
         run_id=uid()
         record={"id":run_id,"experiment_id":item["id"],"idempotency_key":scoped_key,"status":"QUEUED","progress":0,"message":"Sıraya alındı", "created_at":now(),"cancel_requested":0,"runtime":{"estimate":estimate}}
         try:
@@ -162,6 +242,8 @@ class ExperimentService:
                 changed=con.execute(update(experiments).where(experiments.c.id==item["id"],experiments.c.status=="DRAFT").values(status="QUEUED",updated_at=now()))
                 if changed.rowcount!=1: raise DomainError("Her deney bir kez çalıştırılır. Yeni çalışma için klonlayın.",409,"test_already_exposed")
                 con.execute(runs.insert().values(**record))
+                self._record_trial(con,"candidate_planned",estimate["candidate_limit"],item["id"],{"run_id":run_id})
+                self._record_trial(con,"backtest_planned",risk["estimated_backtests"],item["id"],{"run_id":run_id})
                 self.log(con,item["id"],run_id,"experiment.status.changed",{"status":"QUEUED","progress":0})
                 self.audit(con,"experiment.run",item["id"],actor,{"run_id":run_id,"estimate":estimate})
         except IntegrityError:
@@ -195,6 +277,55 @@ class ExperimentService:
             con.execute(update(experiments).where(experiments.c.id==row["experiment_id"]).values(status=status,updated_at=now()))
             self.log(con,row["experiment_id"],run_id,"experiment.status.changed",{"status":status,"message":message})
 
+    def open_final_test(self, run_id):
+        """Worker-only gate; no optimizer code receives a callable test reader."""
+        with self.engine.begin() as con:
+            row=con.execute(select(experiments).join(runs, runs.c.experiment_id==experiments.c.id).where(runs.c.id==run_id)).mappings().one()
+            return self._open_seal_for_final_test(con, row, run_id)
+
+    def lineage(self, identifier):
+        item=self.get(identifier)
+        with self.engine.connect() as con:
+            return [dict(row) for row in con.execute(select(experiment_edges).where((experiment_edges.c.from_experiment_id==item["id"]) | (experiment_edges.c.to_experiment_id==item["id"])).order_by(experiment_edges.c.id)).mappings()]
+
+    def persist_candidates(self, experiment_id, candidates, artifact_ref=None):
+        pareto_ids={c["id"] for c in candidates if c.get("pareto")}
+        with self.engine.begin() as con:
+            for candidate in candidates:
+                metrics=candidate["metrics"]
+                dominates=sum(1 for other in candidates if other["id"] != candidate["id"] and other["metrics"]["sharpe"] >= metrics["sharpe"] and other["metrics"]["return"] >= metrics["return"] and other["metrics"]["max_drawdown"] >= metrics["max_drawdown"] and any(other["metrics"][k] > metrics[k] for k in ("sharpe","return","max_drawdown")))
+                decision="selected" if candidate.get("selected") else ("pareto" if candidate["id"] in pareto_ids else ("rejected_constraint" if not candidate["feasible"] else "not_selected"))
+                exists=con.execute(select(optimization_candidates.c.id).where(optimization_candidates.c.experiment_id==experiment_id,optimization_candidates.c.candidate_key==candidate["id"])).first()
+                if not exists: con.execute(optimization_candidates.insert().values(id=uid(),experiment_id=experiment_id,candidate_key=candidate["id"],generation=None,genome=candidate["genome"],metrics=metrics,fitness=candidate["fitness"],pareto_rank=0 if candidate["id"] in pareto_ids else None,dominance_count=dominates,decision=decision,artifact_ref=artifact_ref,created_at=now()))
+
+    def candidates(self, identifier):
+        item=self.get(identifier)
+        with self.engine.connect() as con: return [dict(row) for row in con.execute(select(optimization_candidates).where(optimization_candidates.c.experiment_id==item["id"]).order_by(optimization_candidates.c.fitness.desc())).mappings()]
+
+    def candidate(self, identifier):
+        with self.engine.connect() as con: row=con.execute(select(optimization_candidates).where(optimization_candidates.c.id==identifier)).mappings().first()
+        if not row: raise DomainError("Aday bulunamadı.",404,"not_found")
+        return dict(row)
+
+    def persist_feature_analysis(self, experiment_id, analysis, selected):
+        with self.engine.begin() as con:
+            for item in analysis["features"]:
+                exists=con.execute(select(feature_evaluations.c.id).where(feature_evaluations.c.experiment_id==experiment_id,feature_evaluations.c.feature==item["feature"])).scalar()
+                if exists: continue
+                evaluation_id=uid()
+                con.execute(feature_evaluations.insert().values(id=evaluation_id,experiment_id=experiment_id,feature=item["feature"],ic=item["ic"],sign_consistency=item["sign_consistency"],mutual_information=item["mutual_information"],missingness=0.0,selected=int(item["feature"] in selected),created_at=now()))
+                for index, ic in enumerate(item["rolling_ic"]): con.execute(feature_stability_runs.insert().values(id=uid(),feature_evaluation_id=evaluation_id,window_index=index,rolling_ic=ic,created_at=now()))
+
+    def feature_evaluations(self, identifier):
+        item=self.get(identifier)
+        with self.engine.connect() as con:
+            records=[]
+            for row in con.execute(select(feature_evaluations).where(feature_evaluations.c.experiment_id==item["id"]).order_by(feature_evaluations.c.feature)).mappings():
+                value=dict(row)
+                value["stability_runs"]=[dict(r) for r in con.execute(select(feature_stability_runs).where(feature_stability_runs.c.feature_evaluation_id==value["id"]).order_by(feature_stability_runs.c.window_index)).mappings()]
+                records.append(value)
+            return records
+
     def cancel(self, identifier, actor):
         item=self.get(identifier)
         if not item["run"] or item["status"] in TERMINAL: raise DomainError("Aktif çalışma yok.",409)
@@ -227,7 +358,11 @@ class ExperimentService:
             differences.append({"code":item["experiment"]["code"],"config":{k:{"before":left.get(k),"after":v} for k,v in right.items() if left.get(k)!=v},
                                 "features_added":sorted(set(item["result"]["selected_features"])-set(base["result"]["selected_features"])),
                                 "features_removed":sorted(set(base["result"]["selected_features"])-set(item["result"]["selected_features"]))})
-        signatures={(i["experiment"]["snapshot"]["sha256"],i["result"]["split"]["test_start"],i["result"]["split"]["test_end"],json.dumps(i["experiment"]["specification"]["backtest"],sort_keys=True)) for i in items}
+        def canonical(value):
+            if isinstance(value, dict): return {k: canonical(v) for k,v in value.items()}
+            if isinstance(value, list): return [canonical(v) for v in value]
+            return float(value) if isinstance(value, (int,float)) and not isinstance(value, bool) else value
+        signatures={(i["experiment"]["snapshot"]["sha256"],i["result"]["split"]["test_start"],i["result"]["split"]["test_end"],json.dumps(canonical(i["experiment"]["specification"]["backtest"]),sort_keys=True)) for i in items}
         return {"items":items,"differences":differences,"comparable":len(signatures)==1,
                 "warning":None if len(signatures)==1 else "Snapshot, test dönemi veya maliyet/sermaye ayarları farklı; doğrudan performans sıralaması yanıltıcı olabilir."}
 

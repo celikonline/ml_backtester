@@ -18,7 +18,18 @@ def main(run_id):
         folder=service.storage/"runs"/run_id
         folder.mkdir(parents=True,exist_ok=True)
         atomic_json(folder/"specification.json",item["specification"])
-        result=execute_research(df,spec,lambda kind,payload:service.emit(run_id,kind,payload),folder)
+        # execute_research keeps the holdout opaque until it emits the frozen-candidate boundary.
+        opened = False
+        def emit(kind, payload):
+            nonlocal opened
+            if kind == "candidate.frozen" and not opened:
+                service.open_final_test(run_id); opened = True
+            service.emit(run_id, kind, payload)
+        result=execute_research(df,spec,emit,folder)
+        pareto={candidate["id"] for candidate in result["optimization"]["pareto"]}
+        candidates=[{**candidate,"pareto":candidate["id"] in pareto,"selected":candidate["id"]==result["optimization"]["best"]["id"]} for candidate in result["optimization"]["candidates"]]
+        service.persist_candidates(item["id"],candidates,"frozen_candidate.json")
+        service.persist_feature_analysis(item["id"],result["feature_analysis"],result["selected_features"])
         atomic_json(folder/"result.json",result)
         service.finish(run_id,"COMPLETED","Deney tamamlandı",str((folder/"result.json").relative_to(service.storage)),result["metrics"])
     except InterruptedError:

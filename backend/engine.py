@@ -140,6 +140,17 @@ def backtest(prediction, actual, cost, threshold=0):
     return returns, signal
 
 
+def fx_backtest(prediction, actual, reality, timestamps, threshold=0):
+    """Deterministic FX execution: signal-close, next-open fill, then rollover."""
+    config = reality.model_dump() if hasattr(reality, "model_dump") else reality
+    one_way = (config.get("spread_bps", 0) / 2 + config.get("commission_bps", 0) + config.get("slippage_bps", 0)) / 10000
+    ret, signal = backtest(prediction, actual, one_way, threshold)
+    index = pd.DatetimeIndex(timestamps)
+    elapsed_days = np.r_[0., np.maximum(0., np.diff(index.asi8) / 86_400_000_000_000)]
+    financing = np.abs(signal) * elapsed_days * config.get("rollover_bps_per_day", 0) / 10000
+    return ret - financing, signal, {"one_way_cost_bps": one_way * 10000, "financing_bps": float(financing.sum() * 10000)}
+
+
 def metrics(ret, signal, annual):
     eq = np.r_[1.0, np.cumprod(1 + ret)]
     dd = eq / np.maximum.accumulate(eq) - 1

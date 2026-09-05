@@ -118,3 +118,21 @@ def test_policy_rejects_excessive_work(tmp_path):
             service.create(invalid, {"id": "tester"})
     finally:
         service.close()
+
+
+def test_versioned_search_space_and_durable_candidate_registry(tmp_path):
+    service = ExperimentService(dataset_loader=lambda _: (demo_prices(700), "demo", True), url="sqlite:///" + (tmp_path / "x.db").as_posix(), storage=tmp_path / "a")
+    service.start(); actor={"id":"tester","source":"REST"}
+    try:
+        space=service.create_search_space({"name":"small ridge","feature_groups":["technical"],"features":["return_1","volatility_14","momentum_14"],"min_features":3,"max_features":3,"models":["ridge"],"thresholds_bps":[0,.5]},actor)
+        draft=make_spec("registry", "none").model_copy(update={"search_space_id":space["id"]})
+        experiment=service.create(draft,actor)
+        assert experiment["specification"]["models"] == ["ridge"]
+        service.run(experiment["id"],"candidate-registry",actor)
+        assert wait_until_done(service,experiment["id"])["status"] == "COMPLETED"
+        candidates=service.candidates(experiment["id"])
+        assert candidates and candidates[0]["decision"] == "selected"
+        assert service.candidate(candidates[0]["id"])["candidate_key"]
+        features=service.feature_evaluations(experiment["id"])
+        assert features and len(features[0]["stability_runs"]) == 4
+    finally: service.close()

@@ -4,7 +4,7 @@ import os
 import uuid
 import httpx
 from mcp.server.fastmcp import FastMCP
-from backend.platform.schema import ExperimentSpec
+from backend.platform.schema import ExperimentSpec, SearchSpaceDefinition
 
 mcp=FastMCP("RegimeLab")
 BASE=os.environ.get("REGIMELAB_API_URL","http://127.0.0.1:8000/api/v1").rstrip("/")
@@ -22,6 +22,24 @@ async def call(method,path,body=None,key=None):
 async def create_experiment(specification:ExperimentSpec)->dict:
     """Create a draft using the same versioned specification as REST/UI; does not run."""
     return await call("POST","/experiments",specification.model_dump())
+
+@mcp.tool()
+async def validate_experiment_spec(specification:ExperimentSpec)->dict:
+    """Validate and estimate policy/risk without creating or running an experiment."""
+    return await call("POST","/research/estimate",specification.model_dump())
+
+@mcp.tool()
+async def list_search_spaces()->list:
+    return await call("GET","/search-spaces")
+
+@mcp.tool()
+async def create_search_space(definition:SearchSpaceDefinition)->dict:
+    """Create a versioned optimizer domain object shared by UI, REST and MCP."""
+    return await call("POST","/search-spaces",definition.model_dump())
+
+@mcp.tool()
+async def get_research_budget()->dict:
+    return await call("GET","/research/budget")
 
 @mcp.tool()
 async def run_experiment(experiment_id:str,idempotency_key:str)->dict:
@@ -67,6 +85,14 @@ async def list_features()->list:
 @mcp.tool()
 async def get_optimization_result(experiment_id:str)->dict:
     return await call("GET",f"/experiments/{experiment_id}/optimization")
+
+@mcp.tool()
+async def get_candidates(experiment_id:str)->list:
+    return await call("GET",f"/experiments/{experiment_id}/candidates")
+
+@mcp.tool()
+async def get_experiment_lineage(experiment_id:str)->list:
+    return await call("GET",f"/experiments/{experiment_id}/lineage")
 
 @mcp.tool()
 async def get_feature_analysis(experiment_id:str)->dict:

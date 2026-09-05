@@ -1,7 +1,8 @@
 import numpy as np
+import pandas as pd
 import pytest
 from hmmlearn.hmm import GaussianHMM
-from backend.engine import backtest, causal_probabilities, demo_prices, features, metrics, read_prices, run_experiment
+from backend.engine import backtest, causal_probabilities, demo_prices, features, fx_backtest, metrics, read_prices, run_experiment
 from backend.app import RunConfig
 
 
@@ -42,6 +43,17 @@ def test_costs_charge_reversal_and_final_exit():
     np.testing.assert_allclose(r, [.009, .01, .007])
     m = metrics(np.array([-.1, .01]), np.ones(2), 252)
     assert m["max_drawdown"] == pytest.approx(-.1)
+
+
+def test_fx_reality_charges_spread_commission_and_weekend_rollover():
+    index = pd.DatetimeIndex(["2024-01-05 20:00Z", "2024-01-08 00:00Z"])
+    reality = {"spread_bps": 2, "commission_bps": 1, "slippage_bps": 1, "rollover_bps_per_day": 2}
+    returns, signal, details = fx_backtest(np.ones(2), np.zeros(2), reality, index)
+    # 1 bp half-spread + 1 bp commission + 1 bp slippage per one-way fill;
+    # the final exit costs another 3 bp and the open position finances 2.1667 days.
+    assert signal.tolist() == [1, 1]
+    assert returns.sum() == pytest.approx(-(6 + 2 * (52 / 24)) / 10000)
+    assert details["one_way_cost_bps"] == pytest.approx(3)
 
 
 def test_experiment_is_finite_and_purged():

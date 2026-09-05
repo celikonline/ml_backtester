@@ -24,11 +24,31 @@ class OptimizationSpec(Contract):
     hyperparameters: bool = True
     objective: Literal["sharpe", "return"] = "sharpe"
     max_drawdown: float = Field(.5, gt=0, le=1)
+    thresholds_bps: list[float] = Field(default_factory=lambda:[0, .25, .5, 1, 2], min_length=1, max_length=20)
 
     @model_validator(mode="after")
     def coherent(self):
         if self.elitism >= self.population or self.min_features > self.max_features:
             raise ValueError("Elitizm popülasyondan küçük; minimum özellik maksimumdan küçük/eşit olmalı.")
+        return self
+
+
+class SearchSpaceDefinition(Contract):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field("", max_length=1000)
+    feature_groups: list[str] = Field(default_factory=lambda:["technical"], min_length=1)
+    features: list[str] = Field(default_factory=list, max_length=80)
+    min_features: int = Field(3, ge=1, le=80)
+    max_features: int = Field(30, ge=1, le=80)
+    models: list[Literal["ridge", "random_forest", "hist_gradient_boosting", "xgboost", "lightgbm"]] = Field(default_factory=lambda:["ridge"], min_length=1)
+    hyperparameters: bool = True
+    thresholds_bps: list[float] = Field(default_factory=lambda:[0, .25, .5, 1, 2], min_length=1)
+    regime_states: int = Field(3, ge=2, le=5)
+    max_drawdown: float = Field(.5, gt=0, le=1)
+
+    @model_validator(mode="after")
+    def bounds(self):
+        if self.min_features > self.max_features: raise ValueError("Minimum özellik maksimumdan büyük olamaz.")
         return self
 
 
@@ -40,10 +60,30 @@ class ValidationSpec(Contract):
     locked_test: Literal[True] = True
 
 
+class BacktestRealityConfig(Contract):
+    """Execution assumptions; timestamps remain UTC and signals fill next-bar."""
+    spread_model: Literal["fixed", "ohlc_range"] = "fixed"
+    spread_bps: float = Field(.5, ge=0, le=50)
+    commission_bps: float = Field(0, ge=0, le=50)
+    slippage_bps: float = Field(.2, ge=0, le=50)
+    rollover_bps_per_day: float = Field(0, ge=-50, le=50)
+    timezone: str = "UTC"
+    max_leverage: float = Field(1, ge=1, le=30)
+    max_position_fraction: float = Field(1, gt=0, le=1)
+
+
 class BacktestSpec(Contract):
     capital: float = Field(10000, ge=100, le=100000000)
     cost_bps: float = Field(.5, ge=0, le=20)
     slippage_bps: float = Field(.2, ge=0, le=20)
+    spread_model: Literal["fixed", "ohlc_range"] = "fixed"
+    spread_bps: float = Field(.5, ge=0, le=50)
+    commission_bps: float = Field(0, ge=0, le=50)
+    rollover_bps_per_day: float = Field(0, ge=-50, le=50)
+    timezone: str = "UTC"
+    max_leverage: float = Field(1, ge=1, le=30)
+    max_position_fraction: float = Field(1, gt=0, le=1)
+    reality: BacktestRealityConfig = Field(default_factory=BacktestRealityConfig)
 
 
 class ExperimentSpec(Contract):
@@ -62,6 +102,7 @@ class ExperimentSpec(Contract):
     backtest: BacktestSpec = Field(default_factory=BacktestSpec)
     seed: int = Field(42, ge=0, le=2147483647)
     regime_states: int = Field(3, ge=2, le=5)
+    search_space_id: str | None = Field(None, max_length=36)
 
     @model_validator(mode="after")
     def distinct(self):
@@ -91,6 +132,8 @@ STAGES = ["QUEUED", "DATA_PREPARATION", "FEATURE_ENGINEERING", "TRAINING", "OPTI
 TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "POLICY_REJECTED"}
 POLICY = {"max_population": 32, "max_generations": 20, "max_candidates": 128, "max_models": 5,
           "max_training_minutes": 10, "max_parallel_jobs": 1, "max_queued_jobs": 8, "max_rows": 50000}
+RESEARCH_BUDGET = {"max_experiments": 50, "max_candidates": 2000, "max_backtests": 2500,
+                   "max_sealed_test_accesses": 1, "risk_reject_at": 0.90}
 
 
 def check_policy(spec, rows):
@@ -99,3 +142,16 @@ def check_policy(spec, rows):
         raise DomainError(f"Hesaplama sınırı: en fazla {POLICY['max_candidates']} aday ve {POLICY['max_rows']} bar. İstenen: {count} aday, {rows} bar.", 422, "policy_rejected")
     return {"candidate_limit": count, "fit_upper_bound": count * (spec.validation.folds if spec.validation.method == "walk_forward" else 1) + 1,
             "timeout_seconds": POLICY["max_training_minutes"] * 60}
+
+
+def estimate_research_risk(spec, rows, usage=None):
+    """A transparent, deliberately conservative multiple-testing estimate."""
+    estimate = check_policy(spec, rows)
+    usage = usage or {}
+    candidates = estimate["candidate_limit"]
+    backtests = candidates * (spec.validation.folds if spec.validation.method == "walk_forward" else 1) + 1
+    pressure = max((usage.get("experiments", 0) + 1) / RESEARCH_BUDGET["max_experiments"],
+                   (usage.get("candidates", 0) + candidates) / RESEARCH_BUDGET["max_candidates"],
+                   (usage.get("backtests", 0) + backtests) / RESEARCH_BUDGET["max_backtests"])
+    return {"estimated_candidates": candidates, "estimated_backtests": backtests,
+            "risk_score": min(1.0, round(pressure, 4)), "limits": RESEARCH_BUDGET}

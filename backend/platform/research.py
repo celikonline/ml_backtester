@@ -13,7 +13,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from threadpoolctl import threadpool_limits
 
-from backend.engine import features, backtest, metrics, causal_probabilities
+from backend.engine import features, backtest, fx_backtest, metrics, causal_probabilities
 from .models import MODEL_REGISTRY, ModelAdapter
 from .schema import ExperimentSpec
 from .families import family_for_column
@@ -125,7 +125,7 @@ def optimize(x_dev, y_dev, spec, annual, emit):
 
     def random_genome():
         return {"mask": repair(rng.random(len(columns)) < .5).tolist(), "model": str(rng.choice(spec.models)),
-                "param": int(rng.integers(3)) if o.hyperparameters else 1, "threshold": float(rng.choice([0,.25,.5,1,2]))}
+                "param": int(rng.integers(3)) if o.hyperparameters else 1, "threshold": float(rng.choice(o.thresholds_bps))}
 
     def evaluate(genome):
         key = hashlib.sha256(json.dumps(genome,sort_keys=True).encode()).hexdigest()[:16]
@@ -178,7 +178,7 @@ def optimize(x_dev, y_dev, spec, annual, emit):
                 child = {**p1,"mask":repair(mask).tolist()}
                 if rng.random() < o.mutation_rate: child["model"] = str(rng.choice(spec.models))
                 if o.hyperparameters and rng.random() < o.mutation_rate: child["param"] = int(rng.integers(3))
-                if rng.random() < o.mutation_rate: child["threshold"] = float(rng.choice([0,.25,.5,1,2]))
+                if rng.random() < o.mutation_rate: child["threshold"] = float(rng.choice(o.thresholds_bps))
                 new.append(child)
             population = new
         population = list(cache.values())
@@ -258,9 +258,10 @@ def _execute(df,spec,emit,artifact_dir):
     emit("candidate.frozen",{"id":best["id"],"features":best["features"],"test_access":"CLOSED_UNTIL_FREEZE"})
     emit("stage",{"status":"TESTING","progress":80,"message":"Sabit aday için tek final test ölçümü"})
     forecast = model.predict(x.iloc[b:][best["features"]])
-    cost = (spec.backtest.cost_bps+spec.backtest.slippage_bps)/10000
-    ret,signal = backtest(forecast,y[b:],cost,best["threshold_bps"]/10000)
-    benchmark,_ = backtest(np.ones(len(ret)),y[b:],cost)
+    reality = spec.backtest.reality.model_copy(update={"slippage_bps": spec.backtest.slippage_bps + spec.backtest.reality.slippage_bps,
+                                                        "spread_bps": spec.backtest.spread_bps + 2 * spec.backtest.cost_bps})
+    ret,signal,execution = fx_backtest(forecast,y[b:],reality,x.index[b:],best["threshold_bps"]/10000)
+    benchmark,_,_ = fx_backtest(np.ones(len(ret)),y[b:],reality,x.index[b:])
     emit("stage",{"status":"BACKTESTING","progress":88,"message":"Maliyet, kayma ve risk metrikleri"})
     m = score(ret,signal,annual)
     equity = spec.backtest.capital*np.cumprod(1+ret)
@@ -282,14 +283,15 @@ def _execute(df,spec,emit,artifact_dir):
                         "mean_net_return_bps":float(ret[mask].mean()*10000) if mask.any() else None})
     sensitivities = []
     for multiplier in [0,1,2,3]:
-        rr,ss = backtest(forecast,y[b:],cost*multiplier,best["threshold_bps"]/10000)
-        sensitivities.append({"cost_multiplier":multiplier,"total_bps":cost*multiplier*10000,**score(rr,ss,annual)})
+        multiplied = reality.model_copy(update={"spread_bps":reality.spread_bps*multiplier,"commission_bps":reality.commission_bps*multiplier,"slippage_bps":reality.slippage_bps*multiplier})
+        rr,ss,details = fx_backtest(forecast,y[b:],multiplied,x.index[b:],best["threshold_bps"]/10000)
+        sensitivities.append({"cost_multiplier":multiplier,**details,**score(rr,ss,annual)})
     # Read-only diagnostics, never fed back into candidate selection.
     warnings = []
     if m["sharpe"]<best["metrics"]["sharpe"]-.5: warnings.append("Test Sharpe, doğrulama Sharpe değerinden en az 0,5 puan düşük.")
     if m["position_changes"]<20: warnings.append("Test döneminde 20'den az pozisyon değişimi var.")
     return {"metrics":m,"validation_metrics":best["metrics"],"validation_test_sharpe_delta":m["sharpe"]-best["metrics"]["sharpe"],
-            "curve":curve,"optimization":optimization,"feature_analysis":analysis,"regimes":regimes,"transition":hmm.transmat_.tolist(),
+            "curve":curve,"execution":{**execution,"signal_to_fill":"signal close -> next open","timezone":reality.timezone,"max_leverage":reality.max_leverage,"max_position_fraction":reality.max_position_fraction},"optimization":optimization,"feature_analysis":analysis,"regimes":regimes,"transition":hmm.transmat_.tolist(),
             "selected_features":best["features"],"selected_model":best["model"],"parameters":best["parameters"],"cost_sensitivity":sensitivities,
             "split":{"development":dev_end,"gap":spec.validation.gap,"test":len(x)-b,"development_end":x.index[dev_end-1].isoformat(),"test_start":x.index[b].isoformat(),"test_end":timestamps.iloc[-1].isoformat()},
             "test_policy":{"optimizer_access":False,"candidate_frozen_before_test":True,"test_evaluations":1,"repeated_research_warning":"Klonlar aynı test dönemini tekrar ölçebilir; bu dönem küresel olarak hiç görülmemiş holdout sayılmaz."},

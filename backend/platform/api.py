@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
 
-from .schema import ExperimentSpec, CloneSpec, CompareSpec, DomainError, POLICY, TERMINAL
+from .schema import ExperimentSpec, SearchSpaceDefinition, CloneSpec, CompareSpec, DomainError, POLICY, TERMINAL
 from .service import ExperimentService
 from .models import MODEL_REGISTRY
 from .research import registry
@@ -58,6 +58,22 @@ def router(dataset_loader, datasets_list):
     @api.get("/specification/schema")
     def schema(): return ExperimentSpec.model_json_schema()
 
+    @api.post("/research/estimate")
+    def research_estimate(spec:ExperimentSpec, snapshot_id:str|None=None, s=Depends(service)):
+        return s.estimate(spec, snapshot_id)
+
+    @api.get("/research/budget")
+    def research_budget(s=Depends(service)): return s.budget_status()
+
+    @api.get("/search-spaces")
+    def list_search_spaces(s=Depends(service)): return s.list_search_spaces()
+
+    @api.post("/search-spaces", status_code=201)
+    def create_search_space(body:SearchSpaceDefinition,s=Depends(service),who=Depends(actor)): return s.create_search_space(body,who)
+
+    @api.get("/search-spaces/{identifier}")
+    def get_search_space(identifier:str,s=Depends(service)): return s.get_search_space(identifier)
+
     @api.get("/datasets")
     def datasets(): return datasets_list()
 
@@ -93,6 +109,14 @@ def router(dataset_loader, datasets_list):
 
     @api.get("/experiments/{identifier}")
     def get(identifier:str,s=Depends(service)): return s.get(identifier)
+
+    @api.get("/experiments/{identifier}/seal")
+    def seal(identifier:str,s=Depends(service)):
+        item=s.get(identifier)
+        return s.seal_status(item["snapshot_id"])
+
+    @api.get("/experiments/{identifier}/lineage")
+    def lineage(identifier:str,s=Depends(service)): return s.lineage(identifier)
 
     @api.patch("/experiments/{identifier}")
     def patch(identifier:str,body:ExperimentSpec,s=Depends(service),who=Depends(actor)): return s.patch(identifier,body,who)
@@ -146,13 +170,19 @@ def router(dataset_loader, datasets_list):
     @api.get("/experiments/{identifier}/feature-analysis")
     def feature_analysis(identifier:str,s=Depends(service)): return s.result(identifier)["feature_analysis"]
 
+    @api.get("/experiments/{identifier}/feature-evaluations")
+    def feature_evaluation_history(identifier:str,s=Depends(service)): return s.feature_evaluations(identifier)
+
     @api.get("/experiments/{identifier}/optimization")
     def optimization(identifier:str,s=Depends(service)):
         if s.get(identifier)["status"]=="COMPLETED": return s.result(identifier)["optimization"]
         return {"generations":[e["payload"] for e in s.logs(identifier) if e["type"]=="optimization.generation.completed"]}
 
     @api.get("/experiments/{identifier}/candidates")
-    def candidates(identifier:str,s=Depends(service)): return s.result(identifier)["optimization"]["candidates"]
+    def candidates(identifier:str,s=Depends(service)): return s.candidates(identifier)
+
+    @api.get("/candidates/{identifier}")
+    def candidate(identifier:str,s=Depends(service)): return s.candidate(identifier)
 
     @api.get("/experiments/{identifier}/pareto")
     def pareto(identifier:str,s=Depends(service)): return s.result(identifier)["optimization"]["pareto"]
@@ -193,4 +223,6 @@ def router(dataset_loader, datasets_list):
 
 
 async def domain_error(request,exc):
-    return JSONResponse(status_code=exc.status,content={"error":{"code":exc.code,"message":str(exc)},"detail":str(exc)})
+    from ..i18n import translate
+    message = translate(str(exc), request.headers.get("accept-language", ""))
+    return JSONResponse(status_code=exc.status,content={"error":{"code":exc.code,"message":message},"detail":message})
