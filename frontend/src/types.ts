@@ -1,0 +1,6 @@
+export type Dataset = {id:string;name:string;demo:boolean;rows:number;start:string;end:string;last_close:number;columns:string[];preview:Record<string,string|number>[]};
+export type Config = {dataset_id:string;interval:string;train_ratio:number;states:number;cost_bps:number;capital:number};
+export type Metrics = {return:number;sharpe:number;max_drawdown:number;win_rate:number;active_bars:number;position_changes:number};
+export type Point = {timestamp:string;signal_timestamp:string;equity:number;benchmark:number;drawdown:number;state:number;close:number;prediction_bps:number;return:number;signal:number};
+export type Result = {metrics:Metrics;comparison:(Metrics & {name:string})[];curve:Point[];regimes:{id:number;share:number;bars:number;weights:number[];persistence:number;mean_return_bps:number}[];transition:number[][];experts:{name:string;family:string;features:string[]}[];split:{train:number;validation:number;test:number;purged:number;train_end:string;validation_start:string;test_start:string;test_end:string};threshold_bps:number;feature_count:number;annual_bars:number;hmm_converged:boolean;notes:string[]};
+export type Job = {id:string;status:string;progress:number;message:string;logs:{time:string;message:string}[];created_at:string;config:Config;dataset_name:string;demo:boolean;result?:Result;cancel_requested?:boolean};
