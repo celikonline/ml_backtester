@@ -41,6 +41,10 @@ Başka bir bilgisayarda Python **3.11/3.12** ve Node **20.19+** kurduktan sonra:
 4. Test sermaye eğrisi, düşüş, uzman karşılaştırması ve rejim ağırlıklarını inceleyin.
 5. **CSV** düğmesinden tam bar sonuçlarını indirin; **Deney geçmişi** ile önceki çalıştırmaları açın.
 
+## Vercel dağıtımı
+
+Kök dizindeki `vercel.json`, Vite frontend derlemesini ve `api/index.py` içindeki FastAPI girişini yapılandırır. Vercel projesini bu deponun kök dizinine bağlayın; Build/Install ayarları dosyadan otomatik alınır. `/api/v1` uçlarını uzaktan kullanmak için Vercel Project Settings → Environment Variables bölümünde `REGIMELAB_API_KEY` tanımlayın ve frontend oturumunda aynı anahtarı girin. Vercel Functions geçici dosya sistemi kullandığından kalıcı veri için `REGIMELAB_DATABASE_URL` ve uygun harici depolama yapılandırması gerekir.
+
 Yeni akışta üstteki **Yeni deney** düğmesi altı adımlı wizard'ı açar. Taslağı kaydedin, experiment detayında specification'ı gözden geçirin ve ayrı **Çalıştır** düğmesiyle başlatın. GA yalnızca geliştirme/verifikasyon dönemini görür; aday dondurulduktan sonra test sadece bir kez ölçülür. Deneyler ekranında 2–5 tamamlanmış kayıt seçerek karşılaştırma yapabilirsiniz.
 
 MCP stdio server, uygulama çalışırken şu komutla başlatılır:
