@@ -17,12 +17,27 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.platform.notebooks.inspector import inspect_notebook
+from backend.platform.notebooks.parser import parse_notebook_bytes
 from backend.platform.notebooks.artifacts import collect_artifacts
 from backend.platform.notebooks.service import NotebookService, _xor_obfuscate, _xor_deobfuscate
 from backend.platform.notebooks.executor import _mask_secrets
 from backend.platform.service import ExperimentService
 from backend.app import app
 import regimelab_sdk
+
+
+def test_notebook_viewer_parser_returns_cells_outline_outputs_and_sanitized_html():
+    raw = json.dumps({"cells": [
+        {"cell_type": "markdown", "metadata": {}, "source": ["# Data Preparation\n", "Text"], "outputs": []},
+        {"cell_type": "code", "metadata": {"tags": ["important"]}, "source": "import pandas as pd\ndf = pd.read_csv('x.csv')", "execution_count": 2,
+         "outputs": [{"output_type": "display_data", "data": {"text/html": "<table onclick=\"alert(1)\"><script>alert(1)</script><tr><td>1</td></tr></table>"}}]},
+    ]}).encode()
+    parsed = parse_notebook_bytes(raw)
+    assert parsed["statistics"] == {"total_cells": 2, "code": 1, "markdown": 1, "raw": 0, "outputs": 1}
+    assert parsed["outline"] == [{"cell_index": 0, "level": 1, "title": "Data Preparation"}]
+    assert parsed["cells"][1]["classification"] == "DATA"
+    html = parsed["cells"][1]["outputs"][0]["html"]
+    assert "script" not in html.lower() and "onclick" not in html.lower()
 
 
 def test_snapshot_version_run_download_flow(tmp_path):

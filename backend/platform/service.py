@@ -34,6 +34,13 @@ def atomic_json(path, data):
     temporary.replace(path)
 
 
+def write_stress_artifact(run_folder, report):
+    """Persist the stress report as stress_test_report.json (Sprint 4 artifact)."""
+    from pathlib import Path
+    atomic_json(Path(run_folder) / "stress_test_report.json", report)
+    return "stress_test_report.json"
+
+
 #: Spec sections compared for lineage classification. Identity fields
 #: (name/description/tags) never create lineage semantics.
 LINEAGE_SECTIONS = ("timeframe", "features", "models", "optimization", "validation",
@@ -673,6 +680,36 @@ class ExperimentService:
         if item["status"]!="COMPLETED" or not item["run"]["result_path"]: raise DomainError("Sonuç henüz hazır değil.",409,"result_not_ready")
         return json.loads(self.safe_path(item["run"]["result_path"]).read_text(encoding="utf-8"))
 
+    def stress_report(self, identifier):
+        """Sprint 4: run the same engine over the frozen test slice with
+        stressed costs/latency; persist stress_test_report.json (report-only)."""
+        import numpy as np
+        import pandas as pd
+        from backend.engine import fx_backtest
+        from backend.quant.stress import experiment_stress_report
+        from .research import merged_reality
+        item=self.get(identifier)
+        result=self.result(identifier)
+        si=result.get("stress_inputs") or {}
+        if not si.get("actual_bps"):
+            raise DomainError("Bu sonuç stres girdisi içermiyor; klonlayıp yeniden çalıştırın.",409,"stress_unavailable")
+        spec=ExperimentSpec.model_validate(item["specification"])
+        reality=merged_reality(spec).model_dump()
+        preds=np.asarray(si["prediction_bps"],dtype=float)/10000
+        actuals=np.asarray(si["actual_bps"],dtype=float)/10000
+        stamps=pd.to_datetime(si["signal_timestamp"],utc=True)
+        high=np.asarray(si["test_high"],dtype=float) if si.get("test_high") else None
+        low=np.asarray(si["test_low"],dtype=float) if si.get("test_low") else None
+        threshold=float(si.get("threshold_bps",0))/10000
+        base_reality={**reality,"threshold_bps":threshold}
+        report=experiment_stress_report(preds,actuals,stamps,base_reality,fx_backtest,
+                                        high=high,low=low,threshold=threshold)
+        report["experiment_id"]=item["id"]
+        report["code"]=item["code"]
+        folder=self.storage/"runs"/item["run"]["id"]
+        write_stress_artifact(folder,report)
+        return report
+
     def compare(self, identifiers):
         if not 2<=len(set(identifiers))<=5 or len(set(identifiers))!=len(identifiers): raise DomainError("2–5 farklı deney seçin.",422)
         items=[]
@@ -698,7 +735,7 @@ class ExperimentService:
         item=self.get(identifier)
         if not item["run"]: return []
         folder=self.storage/"runs"/item["run"]["id"]
-        allowed={"result.json","specification.json","frozen_candidate.json","model.joblib"}
+        allowed={"result.json","specification.json","frozen_candidate.json","model.joblib","stress_test_report.json"}
         return [{"name":p.name,"bytes":p.stat().st_size,"sha256":hashlib.sha256(p.read_bytes()).hexdigest()} for p in folder.glob("*") if p.name in allowed]
 
     def start(self):

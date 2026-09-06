@@ -23,6 +23,10 @@ class OptimizationSpec(Contract):
     max_features: int = Field(30, ge=1, le=80)
     hyperparameters: bool = True
     objective: Literal["sharpe", "return"] = "sharpe"
+    # Sprint2 opt-in: False iken eski tek-objective ranking korunur; True iken
+    # QuantFitnessCalculator sıralamayı belirler. Breakdown her iki halde de kaydedilir.
+    use_quant_fitness: bool = False
+    fitness_weights: dict | None = None
     max_drawdown: float = Field(.5, gt=0, le=1)
     min_trades: int = Field(0, ge=0, le=100000)
     max_exposure: float | None = Field(None, gt=0, le=1)
@@ -56,11 +60,17 @@ class SearchSpaceDefinition(Contract):
 
 
 class ValidationSpec(Contract):
-    method: Literal["holdout", "walk_forward"] = "walk_forward"
+    method: Literal["holdout", "walk_forward", "purged_kfold", "rolling", "anchored"] = "walk_forward"
     train_ratio: float = Field(.65, ge=.50, le=.75)
     folds: int = Field(3, ge=2, le=5)
     gap: int = Field(2, ge=2, le=30)
     locked_test: Literal[True] = True
+    # Sprint 3 — leakage-safe validation parameters.
+    purge_window: int = Field(5, ge=0, le=100)
+    embargo_pct: float = Field(.01, ge=0, le=.5)
+    train_window: int = Field(500, ge=10, le=50000)
+    test_window: int = Field(50, ge=5, le=10000)
+    step: int = Field(50, ge=1, le=10000)
 
 
 class BacktestRealityConfig(Contract):
@@ -165,7 +175,9 @@ def check_policy(spec, rows):
     count = spec.optimization.population * spec.optimization.generations if spec.optimization.algorithm == "genetic" else len(spec.models)
     if count > POLICY["max_candidates"] or rows > POLICY["max_rows"]:
         raise DomainError(f"Hesaplama sınırı: en fazla {POLICY['max_candidates']} aday ve {POLICY['max_rows']} bar. İstenen: {count} aday, {rows} bar.", 422, "policy_rejected")
-    return {"candidate_limit": count, "fit_upper_bound": count * (spec.validation.folds if spec.validation.method == "walk_forward" else 1) + 1,
+    from .research import count_splits
+    fold_count = count_splits(spec, rows)
+    return {"candidate_limit": count, "fit_upper_bound": count * fold_count + 1,
             "timeout_seconds": POLICY["max_training_minutes"] * 60}
 
 
@@ -174,7 +186,8 @@ def estimate_research_risk(spec, rows, usage=None):
     estimate = check_policy(spec, rows)
     usage = usage or {}
     candidates = estimate["candidate_limit"]
-    backtests = candidates * (spec.validation.folds if spec.validation.method == "walk_forward" else 1) + 1
+    from .research import count_splits
+    backtests = candidates * count_splits(spec, rows) + 1
     pressure = max((usage.get("experiments", 0) + 1) / RESEARCH_BUDGET["max_experiments"],
                    (usage.get("candidates", 0) + candidates) / RESEARCH_BUDGET["max_candidates"],
                    (usage.get("backtests", 0) + backtests) / RESEARCH_BUDGET["max_backtests"])

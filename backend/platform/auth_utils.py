@@ -1,13 +1,18 @@
 """Authentication utilities: password hashing and JWT handling."""
 import hashlib
 import hmac
+import os
 import secrets
 from datetime import datetime, timezone
 from typing import Any
 
 import jwt
 
-JWT_SECRET = secrets.token_hex(32)
+# Production and multi-process deployments must provide a stable secret. The
+# process-local fallback keeps fresh local development databases convenient,
+# while REGIMELAB_JWT_SECRET prevents valid sessions from breaking after a
+# worker restart or serverless cold start.
+JWT_SECRET = os.environ.get("REGIMELAB_JWT_SECRET") or secrets.token_hex(32)
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_SECONDS = 24 * 60 * 60
 

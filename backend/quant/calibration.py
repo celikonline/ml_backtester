@@ -10,35 +10,36 @@ import pandas as pd
 
 
 def calibrate_probabilities(y_true, y_prob, method: str = "isotonic", cv: int = 3):
-    """Platt (sigmoid) veya isotonic kalibrasyonla capraz-fit kalibre prob doner.
+    """Platt (sigmoid) veya isotonic kalibrasyon, capraz-fit (out-of-fold).
 
-    Not: CalibratedClassifierCV bir siniflandirici ister; burada prefit
-    olasılıkları sarmak icin kucuk bir proba-modeli kullanilir (leakage yok,
-    cunku cv icinde fit edilir).
+    CalibratedClassifierCV bir siniflandirici istedigi icin burada dogrudan
+    IsotonicRegression / LogisticRegression (Platt) kullanilir; her fold
+    diger fold'larda fit edilip kendi uzerinde tahmin uretir (sızıntı yok).
     """
-    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.isotonic import IsotonicRegression
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import StratifiedKFold
 
     if method not in ("sigmoid", "isotonic"):
         raise ValueError("method 'sigmoid' veya 'isotonic' olmali.")
     y_true = np.asarray(y_true)
-    y_prob = np.asarray(y_prob, dtype=float)
+    y_prob = np.clip(np.asarray(y_prob, dtype=float), 1e-6, 1 - 1e-6)
     if len(y_true) != len(y_prob):
         raise ValueError("Uzunluklar uyusmuyor.")
     if len(np.unique(y_true)) < 2:
         raise ValueError("Kalibrasyon icin iki sinif gerekli.")
-
-    class _ProbaModel:
-        def fit(self, X, y):  # noqa: ARG002 - sklearn API uyumu
-            return self
-
-        def predict_proba(self, X):
-            p = np.clip(np.asarray(X).ravel(), 1e-6, 1 - 1e-6)
-            return np.c_[1 - p, p]
-
-    base = _ProbaModel()
-    cal = CalibratedClassifierCV(base, method=method, cv=min(cv, len(y_true)))
-    cal.fit(y_prob.reshape(-1, 1), y_true)
-    return np.clip(cal.predict_proba(y_prob.reshape(-1, 1))[:, 1], 0.0, 1.0)
+    n = len(y_true)
+    cv = max(2, min(int(cv), n))
+    skf = StratifiedKFold(n_splits=cv, shuffle=False)
+    out = np.empty(n, dtype=float)
+    for tr, va in skf.split(y_prob.reshape(-1, 1), y_true):
+        if method == "isotonic":
+            iso = IsotonicRegression(out_of_bounds="clip").fit(y_prob[tr], y_true[tr])
+            out[va] = iso.predict(y_prob[va])
+        else:  # Platt scaling
+            lr = LogisticRegression().fit(y_prob[tr].reshape(-1, 1), y_true[tr])
+            out[va] = lr.predict_proba(y_prob[va].reshape(-1, 1))[:, 1]
+    return np.clip(out, 0.0, 1.0)
 
 
 def calibration_metrics(y_true, y_prob, calibrated=None, n_bins: int = 10) -> dict:

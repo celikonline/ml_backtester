@@ -6,7 +6,7 @@ import ResearchPlatform from './ResearchPlatform';
 import NotebookLab from './NotebookLab';
 import AccountPage from './AccountPage';
 import AuthPage from './AuthPage';
-import { useAuth } from './auth';
+import { getToken, useAuth } from './auth';
 import { useLang } from './i18n';
 import type { Lang } from './i18n';
 import { useWorkspace } from './workspace';
@@ -36,16 +36,16 @@ const capabilityTables: { title: string; rows: CapabilityRow[] }[] = [
   { title: 'Feature engineering', rows: [
     {name:'Lag, delta ve return', explanation:'Harici serilerden gecikme, değişim ve getiri feature’ları üretme.', status:'Var', plan:'Daha geniş feature registry'},
     {name:'Rolling istatistikler', explanation:'Rolling volatility, correlation, beta ve benzeri ölçümler.', status:'Kısmen var', plan:'Quantile, MAD, IQR, entropy ve skew'},
-    {name:'Nonlinear transformations', explanation:'Sigmoid, tanh, threshold ve spline dönüşümleri.', status:'Yok', plan:'Sürüm kontrollü transformer kütüphanesi'},
-    {name:'PCA / PLS / factor extraction', explanation:'Boyut indirgeme ve ortak faktör çıkarımı.', status:'Yok', plan:'Transformer modülleri'},
+    {name:'Nonlinear transformations', explanation:'Sigmoid, tanh, threshold ve spline dönüşümleri.', status:'Kısmen var', plan:'Quant Lab'},
+    {name:'PCA / PLS / factor extraction', explanation:'Boyut indirgeme ve ortak faktör çıkarımı.', status:'Kısmen var', plan:'Quant Lab grafikleri'},
     {name:'Fractional differentiation', explanation:'Serinin hafızasını koruyarak durağanlaştırma.', status:'Yok', plan:'Zaman serisi dönüşüm modülü'},
   ]},
   { title: 'Feature stability', rows: [
-    {name:'Information Coefficient', explanation:'Feature ile hedef arasındaki bilgi gücünü ölçme.', status:'Yok', plan:'Fold bazlı IC raporları'},
-    {name:'IC decay / sign consistency', explanation:'Feature performansının zaman içindeki kararlılığını ölçme.', status:'Yok', plan:'Otomatik stability raporu'},
+    {name:'Information Coefficient', explanation:'Feature ile hedef arasındaki bilgi gücünü ölçme.', status:'Var', plan:'Quant Lab'},
+    {name:'IC decay / sign consistency', explanation:'Feature performansının zaman içindeki kararlılığını ölçme.', status:'Var', plan:'Quant Lab'},
     {name:'Orthogonalization / residualization', explanation:'Tekrarlayan bilgiyi azaltma.', status:'Yok', plan:'Leakage kontrollü dönüşümler'},
-    {name:'Feature clustering / pruning', explanation:'Benzer ve gereksiz feature’ları eleme.', status:'Kısmen var', plan:'Stability selection'},
-    {name:'SHAP stability / ablation', explanation:'Feature katkısının rejimlere göre dayanıklılığını test etme.', status:'Yok', plan:'SHAP ve ablation artifact’ları'},
+    {name:'Feature clustering / pruning', explanation:'Benzer ve gereksiz feature’ları eleme.', status:'Var', plan:'Quant Lab'},
+    {name:'SHAP stability / ablation', explanation:'Feature katkısının rejimlere göre dayanıklılığını test etme.', status:'Kısmen var', plan:'Quant Lab grafikleri'},
   ]},
   { title: 'Rejim analizi', rows: [
     {name:'Gaussian HMM', explanation:'Piyasa rejimlerini istatistiksel olarak sınıflandırma.', status:'Var', plan:'Daha gelişmiş rejim modelleri'},
@@ -58,30 +58,30 @@ const capabilityTables: { title: string; rows: CapabilityRow[] }[] = [
     {name:'Stacking / blending', explanation:'Birden fazla modeli üst modelle birleştirme.', status:'Kısmen var', plan:'Leakage kontrollü stacking'},
   ]},
   { title: 'Tahmin', rows: [
-    {name:'Quantile regression', explanation:'Tahmin aralıklarını üretme.', status:'Yok', plan:'Quantile model ailesi'},
-    {name:'Probability calibration', explanation:'Tahmin olasılıklarının güvenilirliğini ölçme.', status:'Yok', plan:'Calibration pipeline’ı'},
+    {name:'Quantile regression', explanation:'Tahmin aralıklarını üretme.', status:'Kısmen var', plan:'Quant Lab'},
+    {name:'Probability calibration', explanation:'Tahmin olasılıklarının güvenilirliğini ölçme.', status:'Kısmen var', plan:'Quant Lab'},
     {name:'Conformal prediction', explanation:'Tahmin belirsizliğini istatistiksel olarak hesaplama.', status:'Yok', plan:'Conformal prediction modülü'},
     {name:'Distributional forecasting', explanation:'Tek değer yerine tahmin dağılımı üretme.', status:'Yok', plan:'Rejim bazlı dağılımsal tahmin'},
     {name:'Online / incremental learning', explanation:'Modeli yeni veriler geldikçe güncelleme.', status:'Yok', plan:'Concept-drift destekli online öğrenme'},
   ]},
   { title: 'Validasyon', rows: [
     {name:'Walk-forward analysis', explanation:'Zaman sırasını koruyan ileriye dönük test.', status:'Var', plan:'Daha ayrıntılı fold raporları'},
-    {name:'Nested time-series CV', explanation:'Model seçimini iç ve dış zaman bölümlerinde yapma.', status:'Kısmen var', plan:'Tam nested model selection'},
-    {name:'Purged K-Fold / embargo', explanation:'Bilgi sızıntısını engelleyen gelişmiş CV.', status:'Yok', plan:'Purged splitter ve embargo'},
+    {name:'Nested time-series CV', explanation:'Model seçimini iç ve dış zaman bölümlerinde yapma.', status:'Var', plan:'Quant Lab'},
+    {name:'Purged K-Fold / embargo', explanation:'Bilgi sızıntısını engelleyen gelişmiş CV.', status:'Var', plan:'Quant Lab'},
     {name:'CPCV', explanation:'Combinatorial Purged Cross-Validation.', status:'Yok', plan:'CPCV modülü'},
-    {name:'Rolling / anchored retraining', explanation:'Modeli hareketli veya sabit başlangıçlı pencerelerde yenileme.', status:'Yok', plan:'Retraining policy'},
+    {name:'Rolling / anchored retraining', explanation:'Modeli hareketli veya sabit başlangıçlı pencerelerde yenileme.', status:'Var', plan:'Quant Lab'},
   ]},
   { title: 'Backtest', rows: [
     {name:'Maliyet duyarlılığı', explanation:'Spread, komisyon ve işlem maliyetlerini hesaba katma.', status:'Var', plan:'Daha gerçekçi maliyet modelleri'},
-    {name:'Slippage / latency sensitivity', explanation:'Kayma ve gecikmenin sonuçlara etkisini test etme.', status:'Kısmen var', plan:'Ayrıntılı stres matrisi'},
+    {name:'Slippage / latency sensitivity', explanation:'Kayma ve gecikmenin sonuçlara etkisini test etme.', status:'Var', plan:'Quant Lab'},
     {name:'Final holdout', explanation:'Model seçimi sonrası dokunulmamış final test.', status:'Var', plan:'Test governance geliştirmeleri'},
   ]},
   { title: 'Optimizasyon', rows: [
     {name:'Genetic algorithm', explanation:'Feature, model ve sınırlı parametre seçimi.', status:'Var', plan:'Daha geniş arama alanı'},
-    {name:'Hyperparameter optimization', explanation:'Model parametrelerini optimize etme.', status:'Kısmen var', plan:'Nested HPO'},
+    {name:'Hyperparameter optimization', explanation:'Model parametrelerini optimize etme.', status:'Var', plan:'Quant Lab fitness'},
   ]},
   { title: 'Risk ve sağlamlık', rows: [
-    {name:'Stress testing', explanation:'Farklı maliyet ve piyasa koşullarında dayanıklılık testi.', status:'Kısmen var', plan:'Sistematik stres senaryoları'},
+    {name:'Stress testing', explanation:'Farklı maliyet ve piyasa koşullarında dayanıklılık testi.', status:'Var', plan:'Quant Lab'},
   ]},
   { title: 'Açıklanabilirlik', rows: [
     {name:'SHAP / permutation importance', explanation:'Feature katkılarını açıklama.', status:'Kısmen var', plan:'Açıklama kararlılığı analizi'},
@@ -109,7 +109,8 @@ function statusLabelFor(status: string, lang: Lang): string {
 
 export async function api<T>(url:string, options?:RequestInit, lang: Lang = 'tr'):Promise<T>{
   const wsId = getStoredWorkspaceId();
-  const langHeader = { 'Accept-Language': lang, ...(wsId?{'X-Workspace-Id':wsId}:{}) };
+  const authToken = getToken();
+  const langHeader = { 'Accept-Language': lang, ...(wsId?{'X-Workspace-Id':wsId}:{}), ...(authToken?{Authorization:`Bearer ${authToken}`}:{}) };
   const merged: RequestInit = { ...options, headers: { ...(options?.headers as Record<string,string> | undefined), ...langHeader } };
   const response = await fetch(`/api${url}`,merged);
   if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(typeof body.detail==='string'?body.detail:(lang==='en'?'Request failed. Check the parameters.':'İstek tamamlanamadı. Parametreleri kontrol edin.'));}
@@ -213,7 +214,7 @@ function App(){
     localStorage.setItem('regimelab.theme',theme);
   },[theme]);
   async function run(){setBusy(true);setError('');try{const wsHeaders: Record<string,string> = wsId?{'X-Workspace-Id':wsId}:{};const j=await api<Job>('/runs',{method:'POST',headers:{'Content-Type':'application/json','Accept-Language':lang,...wsHeaders},body:JSON.stringify(config)},lang);setJob(j);setModal(false);setPage('overview');setOnline(true);}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
-  async function upload(file?:File){if(!file)return;setUploading(true);setError('');try{const form=new FormData();form.append('file',file);const wsHeaders: Record<string,string> = wsId?{'X-Workspace-Id':wsId}:{};const res=await fetch('/api/datasets',{method:'POST',headers:{'Accept-Language':lang,...wsHeaders},body:form});if(!res.ok){const body=await res.json().catch(()=>({}));throw new Error(typeof body.detail==='string'?body.detail:t('api.genericError'));}const ds=await res.json() as Dataset;setDatasets(prev=>[...prev,ds]);setConfig(prev=>({...prev,dataset_id:ds.id}));setPage('data');}catch(e){setError((e as Error).message);}finally{setUploading(false);if(uploadRef.current)uploadRef.current.value='';}}
+  async function upload(file?:File){if(!file)return;setUploading(true);setError('');try{const form=new FormData();form.append('file',file);const authToken=getToken();const wsHeaders: Record<string,string> = {...(wsId?{'X-Workspace-Id':wsId}:{}),...(authToken?{Authorization:`Bearer ${authToken}`}:{})};const res=await fetch('/api/datasets',{method:'POST',headers:{'Accept-Language':lang,...wsHeaders},body:form});if(!res.ok){const body=await res.json().catch(()=>({}));throw new Error(typeof body.detail==='string'?body.detail:body.error?.message||t('api.genericError'));}const ds=await res.json() as Dataset;setDatasets(prev=>[...prev,ds]);setConfig(prev=>({...prev,dataset_id:ds.id}));setPage('data');}catch(e){setError((e as Error).message);}finally{setUploading(false);if(uploadRef.current)uploadRef.current.value='';}}
   async function openRun(id:string){try{setJob(await api<Job>(`/runs/${id}`,undefined,lang));setPage('overview');}catch(e){setError((e as Error).message);}}
   async function switchAndReload(id:string){switchWorkspace(id);setWorkspaceModal(false);setJob(null);}
   async function createAndSwitch(){const name=newWsName.trim();if(!name)return;setError('');try{await createWorkspace(name.slice(0,120),newWsMarket.trim().slice(0,16));setNewWsName('');setWorkspaceModal(false);}catch(e){setError((e as Error).message);}}

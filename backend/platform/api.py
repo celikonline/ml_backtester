@@ -129,9 +129,9 @@ def router(dataset_loader, datasets_list):
     @api.get("/capabilities")
     def capabilities():
         return {"schema_version":"1.0","models":[{"id":k,**v,"status":"implemented"} for k,v in MODEL_REGISTRY.items()],
-            "policy":POLICY,"auth_mode":"api_key" if os.environ.get("REGIMELAB_API_KEY") else "local_single_user",
+            "policy":POLICY,"auth_mode":"api_key" if os.environ.get("REGIMELAB_API_KEY") else "jwt_rbac",
             "unavailable":[{"name":n,"status":"requires_data"} for n in ["ALFRED / vintage macro","FX IV surface","OIS / forward points","Order flow / microstructure"]]+
-                          [{"name":n,"status":"planned"} for n in ["TFT / LSTM","Optuna / full genome","Stacking","LLM prompt builder","Champion approval / RBAC"]]}
+                          [{"name":n,"status":"planned"} for n in ["TFT / LSTM","Optuna / full genome","Stacking","LLM prompt builder","Champion approval"]]}
 
     @api.get("/specification/schema")
     def schema(): return ExperimentSpec.model_json_schema()
@@ -398,6 +398,21 @@ def router(dataset_loader, datasets_list):
     def get_workspace_notebook(workspace_id:str, notebook_id:str, nbs=Depends(nb_service)):
         return nbs.get_notebook(notebook_id, workspace_id=workspace_id)
 
+    @api.get("/workspaces/{workspace_id}/notebooks/{notebook_id}/cells")
+    def get_workspace_notebook_cells(
+        workspace_id: str, notebook_id: str, version: int | None = Query(default=None, ge=1),
+        nbs=Depends(nb_service),
+    ):
+        """Read-only notebook viewer payload. No cell is executed here."""
+        return nbs.get_notebook_cells(notebook_id, workspace_id=workspace_id, version=version)
+
+    @api.get("/workspaces/{workspace_id}/notebooks/{notebook_id}/analysis")
+    def get_workspace_notebook_analysis(
+        workspace_id: str, notebook_id: str, version: int | None = Query(default=None, ge=1),
+        nbs=Depends(nb_service),
+    ):
+        return nbs.get_notebook_analysis(notebook_id, workspace_id=workspace_id, version=version)
+
     @api.post("/workspaces/{workspace_id}/notebooks/{notebook_id}/archive")
     def archive_workspace_notebook(workspace_id:str, notebook_id:str, nbs=Depends(nb_service), who=Depends(editor)):
         nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
@@ -440,6 +455,37 @@ def router(dataset_loader, datasets_list):
             actor=who,
         )
 
+    @api.post("/workspaces/{workspace_id}/notebooks/{notebook_id}/cells/version", status_code=201)
+    def save_notebook_cells_version(workspace_id: str, notebook_id: str, body: dict,
+                                    nbs=Depends(nb_service), who=Depends(editor)):
+        nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
+        return nbs.save_cells_version(notebook_id=nb["id"], cells=body.get("cells", []),
+                                      change_summary=body.get("change_summary", ""), actor=who)
+
+    @api.get("/workspaces/{workspace_id}/notebooks/{notebook_id}/versions/diff")
+    def notebook_version_diff(workspace_id: str, notebook_id: str, from_version: int,
+                              to_version: int, nbs=Depends(nb_service)):
+        nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
+        return nbs.version_diff(nb["id"], from_version, to_version)
+
+    @api.post("/workspaces/{workspace_id}/notebooks/{notebook_id}/versions/{version}/restore", status_code=201)
+    def restore_notebook_version(workspace_id: str, notebook_id: str, version: int,
+                                 nbs=Depends(nb_service), who=Depends(editor)):
+        nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
+        return nbs.restore_version(notebook_id=nb["id"], version=version, actor=who)
+
+    @api.post("/workspaces/{workspace_id}/notebooks/{notebook_id}/convert-to-experiment")
+    def convert_notebook_to_experiment(workspace_id: str, notebook_id: str, body: dict | None = None,
+                                       nbs=Depends(nb_service), s=Depends(service), who=Depends(editor)):
+        preview = nbs.notebook_experiment_preview(notebook_id, workspace_id=workspace_id)
+        if not (body or {}).get("confirm"):
+            return {"requires_confirmation": True, **preview}
+        spec = dict(preview["spec"])
+        if (body or {}).get("dataset_snapshot_id"):
+            return s.create(spec, who, workspace_id=workspace_id,
+                            snapshot_id=body["dataset_snapshot_id"])
+        return s.create(spec, who, workspace_id=workspace_id)
+
     @api.get("/workspaces/{workspace_id}/snapshots")
     def list_notebook_snapshots(workspace_id:str, nbs=Depends(nb_service)):
         return nbs.list_snapshots(workspace_id)
@@ -460,6 +506,8 @@ def router(dataset_loader, datasets_list):
             environment_id=body.get("environment_id"),
             parameters=body.get("parameters", {}),
             network_mode=body.get("network_mode", "SNAPSHOT_ONLY"),
+            execution_mode=body.get("execution_mode", "all"),
+            start_index=body.get("start_index"),
             actor=who,
         )
 

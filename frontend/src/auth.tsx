@@ -63,6 +63,21 @@ const AuthContext = createContext<AuthContextValue>({
 
 const API_BASE = '/api';
 
+function authRequestHeaders(lang?: string): Record<string, string> {
+  let requested = lang;
+  if (!requested) {
+    try { requested = localStorage.getItem('regimelab.lang') || 'tr'; } catch { requested = 'tr'; }
+  }
+  return { 'Content-Type': 'application/json', 'Accept-Language': requested };
+}
+
+function authErrorMessage(data: any, fallback: string): string {
+  const code = data?.error?.code;
+  if (code === 'email_conflict') return 'auth.emailTaken';
+  if (code === 'invalid_credentials') return 'auth.invalidCredentials';
+  return data?.detail || data?.error?.message || fallback;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [ready, setReady] = useState(false);
@@ -84,12 +99,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (email: string, password: string, remember: boolean) => {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authRequestHeaders(),
       body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'auth.loginFailed');
+      throw new Error(authErrorMessage(data, 'auth.loginFailed'));
     }
     const data = await res.json();
     writeToken(data.token, remember);
@@ -99,12 +114,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const register = useCallback(async (name: string, email: string, password: string) => {
     const res = await fetch(`${API_BASE}/auth/register`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authRequestHeaders(),
       body: JSON.stringify({ name: name.trim(), email: email.trim().toLowerCase(), password }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'auth.registerFailed');
+      throw new Error(authErrorMessage(data, 'auth.registerFailed'));
     }
     const data = await res.json();
     writeToken(data.token, true);

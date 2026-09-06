@@ -393,6 +393,122 @@ class NotebookService:
             })
         return {**self._get_notebook(nb["id"]), "inspection": inspection, "new_version": ver_record}
 
+    def save_cells_version(self, *, notebook_id: str, cells: list[dict],
+                           change_summary: str, actor: dict) -> dict:
+        """Persist editor changes as a new immutable notebook version.
+
+        The original notebook JSON is used as the base so outputs and cell
+        metadata survive an edit. Only the explicitly editable cell fields
+        are accepted from the browser.
+        """
+        if not isinstance(cells, list) or not cells or len(cells) > 500:
+            raise DomainError("Geçersiz hücre listesi.", 422, "invalid_cells")
+        nb = self._get_notebook(notebook_id)
+        versions = self.list_versions(nb["id"])
+        if not versions:
+            raise DomainError("Notebook versiyonu bulunamadı.", 404, "not_found")
+        base_path = self.safe_path(versions[0]["storage_path"])
+        try:
+            notebook = json.loads(base_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DomainError("Notebook içeriği okunamadı.", 422, "invalid_notebook") from exc
+        original = notebook.get("cells")
+        if not isinstance(original, list):
+            raise DomainError("Notebook cells listesi bulunamadı.", 422, "invalid_notebook")
+        original_by_id = {str(c.get("id") or f"cell-{i + 1:03d}"): c for i, c in enumerate(original) if isinstance(c, dict)}
+        rebuilt = []
+        for i, item in enumerate(cells):
+            if not isinstance(item, dict):
+                raise DomainError("Geçersiz hücre.", 422, "invalid_cells")
+            cell_type = str(item.get("cell_type") or "code")
+            if cell_type not in {"code", "markdown", "raw"}:
+                raise DomainError("Geçersiz hücre tipi.", 422, "invalid_cells")
+            cell_id = str(item.get("cell_id") or f"cell-{i + 1:03d}")
+            base = dict(original_by_id.get(cell_id) or {})
+            base["cell_type"] = cell_type
+            source = item.get("source", "")
+            base["source"] = source if isinstance(source, list) else str(source)
+            metadata = dict(base.get("metadata") or {})
+            tags = item.get("tags")
+            if isinstance(tags, list):
+                metadata["tags"] = [str(tag) for tag in tags[:30]]
+            base["metadata"] = metadata
+            if cell_type != "code":
+                base.pop("execution_count", None)
+                base.pop("outputs", None)
+            else:
+                base.setdefault("execution_count", None)
+                base.setdefault("outputs", [])
+            if "id" in base or any(isinstance(c, dict) and c.get("id") for c in original):
+                base["id"] = cell_id
+            rebuilt.append(base)
+        notebook["cells"] = rebuilt
+        raw = json.dumps(notebook, indent=1, ensure_ascii=False).encode("utf-8")
+        return self.new_version(
+            notebook_id=nb["id"], nb_bytes=raw,
+            filename=nb["source_filename"],
+            change_summary=change_summary or "Notebook editörü ile güncellendi",
+            actor=actor,
+        )
+
+    def version_diff(self, notebook_id: str, from_version: int, to_version: int) -> dict:
+        nb = self._get_notebook(notebook_id)
+        versions = {v["version"]: v for v in self.list_versions(nb["id"])}
+        if from_version not in versions or to_version not in versions:
+            raise DomainError("Karşılaştırılacak versiyon bulunamadı.", 404, "not_found")
+        def read(v):
+            data = json.loads(self.safe_path(v["storage_path"]).read_text(encoding="utf-8"))
+            return data.get("cells") or []
+        before, after = read(versions[from_version]), read(versions[to_version])
+        def key(cell, i): return str(cell.get("id") or f"cell-{i + 1:03d}")
+        bmap = {key(c, i): c for i, c in enumerate(before)}
+        amap = {key(c, i): c for i, c in enumerate(after)}
+        added = [k for k in amap if k not in bmap]
+        removed = [k for k in bmap if k not in amap]
+        changed = [k for k in amap if k in bmap and json.dumps(bmap[k], sort_keys=True, ensure_ascii=False) != json.dumps(amap[k], sort_keys=True, ensure_ascii=False)]
+        return {"from_version": from_version, "to_version": to_version, "added_cells": added, "removed_cells": removed, "changed_cells": changed}
+
+    def restore_version(self, *, notebook_id: str, version: int, actor: dict) -> dict:
+        nb = self._get_notebook(notebook_id)
+        selected = next((v for v in self.list_versions(nb["id"]) if v["version"] == version), None)
+        if not selected:
+            raise DomainError("Versiyon bulunamadı.", 404, "not_found")
+        raw = self.safe_path(selected["storage_path"]).read_bytes()
+        return self.new_version(notebook_id=nb["id"], nb_bytes=raw,
+                                filename=nb["source_filename"],
+                                change_summary=f"v{version} geri yüklendi", actor=actor)
+
+    def notebook_experiment_preview(self, identifier: str, workspace_id: str | None = None) -> dict:
+        nb = self.get_notebook(identifier, workspace_id=workspace_id)
+        analysis = self.get_notebook_analysis(nb["id"], workspace_id=workspace_id)
+        detected_models = analysis.get("analysis", analysis).get("models", [])
+        model_map = {"XGBRegressor": "xgboost", "LightGBM": "lightgbm", "RandomForest": "random_forest", "Ridge": "ridge", "HistGradientBoosting": "hist_gradient_boosting"}
+        models = []
+        for name in detected_models:
+            for label, value in model_map.items():
+                if label.lower() in name.lower() and value not in models:
+                    models.append(value)
+        models = models[:5] or ["ridge"]
+        validation = analysis.get("analysis", analysis).get("validation", [])
+        method = "walk_forward" if any("walk" in str(v).lower() for v in validation) else "holdout"
+        spec = {
+            "name": f"{nb['name']} — Experiment",
+            "description": "Notebook statik analizinden oluşturulan taslak; çalıştırmadan önce gözden geçirin.",
+            "tags": ["notebook", "imported"], "market": "FX", "symbol": "EURUSD",
+            "dataset_id": "demo", "workspace_id": nb["workspace_id"], "timeframe": "native",
+            "features": {"groups": ["technical"], "families": [], "names": []},
+            "models": models, "validation": {"method": method}, "optimization": {"algorithm": "none"},
+            "backtest": {}, "seed": 42, "regime_states": 3,
+        }
+        detected = analysis.get("analysis", analysis)
+        return {"notebook": {"id": nb["id"], "name": nb["name"], "version": nb["version"]},
+                "dataset": analysis.get("analysis", analysis).get("datasets", []) or ["demo (varsayılan)"],
+                "target": detected.get("target") or "Notebook içinden otomatik doğrulanamadı",
+                "features": detected.get("features", []),
+                "models": detected_models or models, "model_parameters": detected.get("model_parameters", {}),
+                "regime_model": detected.get("regime_model"), "validation": validation,
+                "backtest": detected.get("backtest", []), "metrics": detected.get("metrics", []), "spec": spec}
+
     def _get_notebook(self, identifier: str) -> dict:
         with self.engine.connect() as con:
             row = con.execute(
@@ -413,6 +529,40 @@ class NotebookService:
                 raise DomainError("Notebook bulunamadı.", 404, "not_found")
         versions = self.list_versions(nb["id"])
         return {**nb, "versions": versions}
+
+    def get_notebook_cells(self, identifier: str, workspace_id: str | None = None,
+                           version: int | None = None) -> dict:
+        """Return read-only parsed cells and existing outputs for the viewer.
+
+        This method never executes notebook code. The version path comes from
+        the registry, then the parser clips large text and sanitizes HTML.
+        """
+        nb = self.get_notebook(identifier, workspace_id=workspace_id)
+        versions = nb.get("versions") or []
+        selected = next((v for v in versions if version is not None and v["version"] == version), None)
+        selected = selected or (versions[0] if versions else None)
+        if not selected:
+            raise DomainError("Notebook versiyonu bulunamadı.", 404, "not_found")
+        from backend.platform.notebooks.parser import parse_notebook_file
+        parsed = parse_notebook_file(self.safe_path(selected["storage_path"]))
+        return {
+            "notebook_id": nb["id"],
+            "notebook_code": nb["notebook_code"],
+            "version": selected["version"],
+            **parsed,
+        }
+
+    def get_notebook_analysis(self, identifier: str, workspace_id: str | None = None,
+                              version: int | None = None) -> dict:
+        nb = self.get_notebook(identifier, workspace_id=workspace_id)
+        versions = nb.get("versions") or []
+        selected = next((v for v in versions if version is not None and v["version"] == version), None)
+        selected = selected or (versions[0] if versions else None)
+        if not selected:
+            raise DomainError("Notebook versiyonu bulunamadı.", 404, "not_found")
+        from backend.platform.notebooks.inspector import inspect_notebook
+        result = inspect_notebook(self.safe_path(selected["storage_path"]).read_bytes())
+        return {"notebook_id": nb["id"], "version": selected["version"], **result}
 
     def list_notebooks(self, workspace_id: str | None = None, include_archived: bool = False) -> list[dict]:
         with self.engine.begin() as con:
@@ -454,7 +604,14 @@ class NotebookService:
                    environment_id: str | None = None,
                    parameters: dict | None = None,
                    network_mode: str = "SNAPSHOT_ONLY",
+                   execution_mode: str = "all",
+                   start_index: int | None = None,
                    actor: dict) -> dict:
+
+        if execution_mode not in {"all", "cell", "from", "restart"}:
+            raise DomainError("Geçersiz çalıştırma modu.", 422, "invalid_execution_mode")
+        if start_index is not None and (start_index < 0 or start_index > 500):
+            raise DomainError("Geçersiz hücre indeksi.", 422, "invalid_cell_index")
 
         with self.engine.begin() as con:
             ws = self._resolve_workspace(con, workspace_id)
@@ -507,7 +664,8 @@ class NotebookService:
             "environment_id": env.get("id"),
             "status": "QUEUED",
             "parameters": parameters or {},
-            "runtime_metadata": {},
+            "runtime_metadata": {"execution_mode": execution_mode,
+                                  "start_index": start_index},
             "network_mode": network_mode,
             "job_pid": None,
             "started_at": None,
@@ -674,6 +832,22 @@ class NotebookService:
 
             nb_path = self.safe_path(ver["storage_path"])
             output_path = run_dir / "executed.ipynb"
+
+            # Execution modes operate on a temporary, auditable input copy.
+            # Parameter-tagged cells are retained so sliced runs remain usable.
+            mode = (run.get("runtime_metadata") or {}).get("execution_mode", "all")
+            start_index = (run.get("runtime_metadata") or {}).get("start_index")
+            if mode in {"cell", "from"} and start_index is not None:
+                source_nb = json.loads(nb_path.read_text(encoding="utf-8"))
+                source_cells = source_nb.get("cells") or []
+                index = max(0, min(int(start_index), max(0, len(source_cells) - 1)))
+                selected_cells = [source_cells[index]] if mode == "cell" else source_cells[index:]
+                parameter_cells = [c for c in source_cells[:index]
+                                   if "parameters" in ((c.get("metadata") or {}).get("tags") or [])]
+                source_nb["cells"] = parameter_cells + selected_cells
+                sliced_path = run_dir / "execution_input.ipynb"
+                sliced_path.write_text(json.dumps(source_nb, ensure_ascii=False), encoding="utf-8")
+                nb_path = sliced_path
 
             # Build injected parameters
             from backend.platform.notebooks.executor import _build_injected_params

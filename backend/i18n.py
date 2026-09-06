@@ -78,6 +78,7 @@ EXACT = {
     "Workspace uyuşmazlığı.": "Workspace mismatch.",
     "Search space bulunamadı.": "Search space not found.",
     "Geçersiz bütçe limiti.": "Invalid budget limit.",
+    "Doğrulama için yeterli veri yok.": "Not enough data for validation.",
     "Bu işlem için yetkiniz yok.": "You don't have permission for this action.",
     "Oturum iptal edilmiş.": "Session has been revoked.",
     "Oturum süresi dolmuş.": "Session has expired.",

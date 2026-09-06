@@ -1,5 +1,13 @@
 import { getStoredWorkspaceId } from './ws-store';
-export const token=()=>sessionStorage.getItem('regimelab-token')||'';
+// Keep the platform client aligned with the auth provider's storage contract.
+// The old key made login appear successful while /api/v1 requests had no token.
+export const token=()=>{
+  try {
+    return localStorage.getItem('regimelab.token') || sessionStorage.getItem('regimelab.token') || '';
+  } catch {
+    return '';
+  }
+};
 export const lang=()=>{try{const v=localStorage.getItem('regimelab.lang');return v==='en'?'en':'tr';}catch{return 'tr';}};
 export const workspaceId=()=>getStoredWorkspaceId()||'';
 export const headers=()=>({'Content-Type':'application/json','X-RegimeLab-Source':'WEB','Accept-Language':lang(),...(workspaceId()?{'X-Workspace-Id':workspaceId()}:{}),...(token()?{Authorization:`Bearer ${token()}`}:{})});
@@ -14,8 +22,26 @@ export async function download(path:string,name:string){
   if(!response.ok)throw new Error('Dosya indirilemedi.');
   const url=URL.createObjectURL(await response.blob());const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url);
 }
-export type Spec={schema_version:'1.0';name:string;description:string;tags:string[];market:'FX';symbol:'EURUSD';dataset_id:string;timeframe:string;features:{groups:string[];families:string[];names:string[]};models:string[];optimization:{algorithm:string;population:number;generations:number;mutation_rate:number;crossover_rate:number;elitism:number;min_features:number;max_features:number;hyperparameters:boolean;objective:string;max_drawdown:number;min_trades:number;max_exposure:number|null;max_worst_regime_drawdown:number|null;thresholds_bps?:number[]};validation:{method:string;train_ratio:number;folds:number;gap:number;locked_test:true};backtest:{capital:number;cost_bps:number;slippage_bps:number};seed:number;regime_states:number;search_space_id?:string|null};
-export const defaultSpec:Spec={schema_version:'1.0',name:'EURUSD araştırması',description:'',tags:[],market:'FX',symbol:'EURUSD',dataset_id:'demo',timeframe:'native',features:{groups:['technical'],families:[],names:[]},models:['ridge','xgboost'],optimization:{algorithm:'genetic',population:8,generations:4,mutation_rate:.12,crossover_rate:.8,elitism:2,min_features:3,max_features:30,hyperparameters:true,objective:'sharpe',max_drawdown:.5,min_trades:0,max_exposure:null,max_worst_regime_drawdown:null},validation:{method:'walk_forward',train_ratio:.65,folds:3,gap:2,locked_test:true},backtest:{capital:10000,cost_bps:.5,slippage_bps:.2},seed:42,regime_states:3,search_space_id:null};
+// ---- Quant Lab: backend/quant endpoints live under /api (not /api/v1) ----
+export type QuantEnvelope<T>={success:boolean;experiment_id:string|null;data:T|null;error:string|null};
+export async function requestQuant<T>(path:string,method='GET',body?:unknown):Promise<T>{
+  const response=await fetch(`/api${path}`,{method,headers:headers(),body:body===undefined?undefined:JSON.stringify(body)});
+  const value=await response.json() as QuantEnvelope<T>;
+  if(!response.ok||!value.success)throw new Error(value.error||'Quant isteği başarısız.');
+  return value.data as T;
+}
+export type QuantICRow={feature:string;ic:number;abs_ic:number;sample_count:number};
+export type QuantICDecayRow={feature:string;horizon:number;ic:number;sample_count:number};
+export type QuantQualityRow={feature:string;ic:number;abs_ic:number;sign_consistency:number;stability_score:number;quality_score:number;cluster?:string;selected?:boolean};
+export type QuantQuality={quality:QuantQualityRow[];clusters:Record<string,string[]>;selected:string[]};
+export type QuantFold={train:number[];validation:number[]};
+export type QuantStressRow={scenario?:string;slippage_bps?:number;latency_bars?:number;total_return:number;sharpe:number;max_drawdown:number;trade_count:number};
+export type QuantStress={scenarios:QuantStressRow[];sharpe_matrix:Record<string,Record<string,number>>;base:QuantStressRow;worst:QuantStressRow};
+export type QuantCalibration={calibrated_probability:number[];brier_raw:number;log_loss_raw:number;brier_calibrated?:number;log_loss_calibrated?:number;curve_raw:{prob_true:number[];prob_pred:number[]};curve_calibrated?:{prob_true:number[];prob_pred:number[]}};
+export type QuantFitness={fitness:number;breakdown:{sharpe_contribution:number;feature_quality_contribution:number;drawdown_penalty:number;turnover_penalty:number}};
+export type QuantQuantile={quantiles:number[];predictions:Record<string,number>[]};
+export type Spec={schema_version:'1.0';name:string;description:string;tags:string[];market:'FX';symbol:'EURUSD';dataset_id:string;timeframe:string;features:{groups:string[];families:string[];names:string[]};models:string[];optimization:{algorithm:string;population:number;generations:number;mutation_rate:number;crossover_rate:number;elitism:number;min_features:number;max_features:number;hyperparameters:boolean;objective:string;max_drawdown:number;min_trades:number;max_exposure:number|null;max_worst_regime_drawdown:number|null;thresholds_bps?:number[]};validation:{method:string;train_ratio:number;folds:number;gap:number;locked_test:true;purge_window:number;embargo_pct:number;train_window:number;test_window:number;step:number};backtest:{capital:number;cost_bps:number;slippage_bps:number};seed:number;regime_states:number;search_space_id?:string|null};
+export const defaultSpec:Spec={schema_version:'1.0',name:'EURUSD araştırması',description:'',tags:[],market:'FX',symbol:'EURUSD',dataset_id:'demo',timeframe:'native',features:{groups:['technical'],families:[],names:[]},models:['ridge','xgboost'],optimization:{algorithm:'genetic',population:8,generations:4,mutation_rate:.12,crossover_rate:.8,elitism:2,min_features:3,max_features:30,hyperparameters:true,objective:'sharpe',max_drawdown:.5,min_trades:0,max_exposure:null,max_worst_regime_drawdown:null},validation:{method:'walk_forward',train_ratio:.65,folds:3,gap:2,locked_test:true,purge_window:5,embargo_pct:.01,train_window:500,test_window:50,step:50},backtest:{capital:10000,cost_bps:.5,slippage_bps:.2},seed:42,regime_states:3,search_space_id:null};
 export type SearchSpaceDef={name:string;description:string;feature_groups:string[];features:string[];min_features:number;max_features:number;models:string[];hyperparameters:boolean;thresholds_bps:number[];regime_states:number;max_drawdown:number};
 export type SearchSpace={id:string;name:string;version:number;definition:SearchSpaceDef;owner:string;created_at:string;archived_at:string|null;workspace_id:string|null};
 export type Metric={sharpe:number;return:number;max_drawdown:number;sortino:number;position_changes:number;win_rate:number;turnover:number};

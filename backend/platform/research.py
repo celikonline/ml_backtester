@@ -14,6 +14,8 @@ from sklearn.preprocessing import StandardScaler
 from threadpoolctl import threadpool_limits
 
 from backend.engine import features, fx_backtest, metrics, causal_probabilities
+from backend.quant.fitness import QuantFitnessCalculator
+from backend.quant.validation import PurgedKFold, rolling_splits, anchored_splits
 from .models import MODEL_REGISTRY, ModelAdapter
 from .schema import ExperimentSpec
 from .families import family_for_column
@@ -131,11 +133,61 @@ class RegimeRouter:
         return {"regime_metrics": entries, "worst_regime_drawdown": worst, "regime_coverage": float(coverage)}
 
 
-def splits(n, method, train_ratio, folds, gap):
-    if method == "holdout":
-        a = int(n * train_ratio / (train_ratio + .15))
-        return [(np.arange(a-gap), np.arange(a,n))]
-    return list(TimeSeriesSplit(n_splits=folds, gap=gap).split(np.arange(n)))
+def splits(n, method, train_ratio, folds, gap, purge_window=0, embargo_pct=0.01,
+           train_window=500, test_window=50, step=50):
+    """Leakage-safe partitions. Returns [(train, val, meta)] with meta holding
+    ``purged_samples`` / ``embargo_samples`` for the fold artifact (Sprint 3).
+
+    - holdout / walk_forward: previous behavior, gap-separated.
+    - purged_kfold: PurgedKFold with purge_window + embargo; train is past-only.
+    - rolling / anchored: fixed / growing windows stepping through history.
+    """
+    from .schema import DomainError
+    try:
+        if method == "holdout":
+            a = int(n * train_ratio / (train_ratio + .15))
+            if a - gap < 1 or a >= n:
+                raise ValueError("holdout")
+            return [(np.arange(a-gap), np.arange(a,n),
+                     {"method": method, "purged_samples": 0, "embargo_samples": 0})]
+        if method == "purged_kfold":
+            kf = PurgedKFold(n_splits=folds, purge_window=purge_window, embargo_pct=embargo_pct)
+            embargo = kf._embargo(n)
+            out = []
+            for train, val in kf.split(np.arange(n)):
+                out.append((train, val, {"method": method,
+                                         "purged_samples": int(min(purge_window, val[0])),
+                                         "embargo_samples": int(min(embargo, n - val[-1] - 1))}))
+            return out
+        if method == "rolling":
+            return [(t, v, {"method": method, "purged_samples": 0, "embargo_samples": 0})
+                    for t, v in rolling_splits(n, train_window, test_window, step)]
+        if method == "anchored":
+            return [(t, v, {"method": method, "purged_samples": 0, "embargo_samples": 0})
+                    for t, v in anchored_splits(n, train_window, test_window, step)]
+        return [(t, v, {"method": "walk_forward", "purged_samples": 0, "embargo_samples": 0})
+                for t, v in TimeSeriesSplit(n_splits=folds, gap=gap).split(np.arange(n))]
+    except DomainError:
+        raise
+    except ValueError:
+        raise DomainError("Doğrulama için yeterli veri yok.", 422, "validation_error")
+
+
+def count_splits(spec, n):
+    """Fold count for budget accounting without materializing partitions."""
+    m = spec.validation.method
+    if m == "holdout":
+        return 1
+    if m == "purged_kfold":
+        return spec.validation.folds
+    if m in ("rolling", "anchored"):
+        try:
+            gen = (rolling_splits if m == "rolling" else anchored_splits)(
+                n, spec.validation.train_window, spec.validation.test_window, spec.validation.step)
+            return sum(1 for _ in gen)
+        except ValueError:
+            return 0
+    return spec.validation.folds
 
 
 #: Objective vector recorded per candidate: key → True when higher is better.
@@ -216,8 +268,24 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
     rng = np.random.default_rng(spec.seed)
     columns = list(x_dev.columns)
     min_count, max_count = min(o.min_features,len(columns)), min(o.max_features,len(columns))
-    partitions = splits(len(x_dev), spec.validation.method, spec.validation.train_ratio, spec.validation.folds, spec.validation.gap)
+    v = spec.validation
+    partitions = splits(len(x_dev), v.method, v.train_ratio, v.folds, v.gap,
+                        v.purge_window, v.embargo_pct, v.train_window, v.test_window, v.step)
     reality = merged_reality(spec)
+    # Sprint2: adapter GA'yı bozmaz — eski ranking default korunur.
+    # feature_quality = seçili feature'ların dev-verideki mean abs(Spearman IC)'si (Sprint1 çıktısı).
+    calc = QuantFitnessCalculator(getattr(o, "fitness_weights", None) or None)
+    y_dev_series = pd.Series(np.asarray(y_dev).ravel(), index=x_dev.index)
+    abs_ic_by_feature = {}
+    for col in columns:
+        s = x_dev[col]
+        paired = pd.DataFrame({"f": s, "t": y_dev_series}).dropna()
+        if len(paired) >= 3 and paired["f"].nunique() > 1 and paired["t"].nunique() > 1:
+            v = spearmanr(paired["f"], paired["t"]).statistic
+            abs_ic_by_feature[col] = float(abs(v)) if np.isfinite(v) else 0.0
+        else:
+            abs_ic_by_feature[col] = 0.0
+    use_quant = bool(getattr(o, "use_quant_fitness", False))
     cache, generations = {}, []
     # One-way cost estimate per unit turnover (fixed leg of the merged reality;
     # the ohlc_range leg varies per bar and is accounted exactly in fx_backtest).
@@ -260,7 +328,7 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
         chosen = [c for c,on in zip(columns,genome["mask"]) if on]
         params = MODEL_REGISTRY[genome["model"]]["parameters"][genome["param"]]
         returns, signals, positions, fold_metrics = [], [], [], []
-        for train, val in partitions:
+        for train, val, meta in partitions:
             emit("optimization.candidate.started", {"evaluated": len(cache), "candidate_id": key})
             model = ModelAdapter(genome["model"], params, spec.seed).fit(x_dev.iloc[train][chosen],y_dev[train])
             pred = model.predict(x_dev.iloc[val][chosen])
@@ -269,7 +337,8 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
             ret, sig, _ = fx_backtest(pred,y_dev[val],reality,stamps,genome["threshold"]/10000,high=bars[0],low=bars[1])
             returns.extend(ret); signals.extend(sig); positions.extend(np.asarray(val).tolist())
             fold_metrics.append({"train_end": x_dev.index[train[-1]].isoformat(), "validation_start": x_dev.index[val[0]].isoformat(),
-                                 "validation_end": x_dev.index[val[-1]].isoformat(), "gap_bars": int(val[0]-train[-1]-1), **score(ret,sig,annual)})
+                                 "validation_end": x_dev.index[val[-1]].isoformat(), "gap_bars": int(val[0]-train[-1]-1),
+                                 "purged_samples": meta["purged_samples"], "embargo_samples": meta["embargo_samples"], **score(ret,sig,annual)})
         m = score(np.array(returns),np.array(signals),annual)
         if router is not None:
             aligned = RegimeRouter(router.states[np.asarray(positions)], router.n_states, router.min_regime_bars)
@@ -278,7 +347,17 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
             regime = {"regime_metrics": [], "worst_regime_drawdown": None, "regime_coverage": 0.0}
         violations = check_constraints(m, regime)
         feasible = not violations
-        fitness = m[o.objective] if feasible else -1000000 - abs(m["max_drawdown"])
+        # Sprint1 -> Sprint2: seçili setin kalitesi (dev-only, holdout/test yok).
+        fq = float(np.mean([abs_ic_by_feature.get(c, 0.0) for c in chosen])) if chosen else 0.0
+        breakdown = calc.breakdown(m["sharpe"], fq, m["max_drawdown"], m["turnover"],
+                                   n_features=len(chosen))
+        quant_fitness = (breakdown["sharpe_contribution"] + breakdown["feature_quality_contribution"]
+                         - breakdown["drawdown_penalty"] - breakdown["turnover_penalty"]
+                         - breakdown["feature_count_penalty"])
+        if use_quant:
+            fitness = quant_fitness if feasible else -1000000 - abs(m["max_drawdown"])
+        else:
+            fitness = m[o.objective] if feasible else -1000000 - abs(m["max_drawdown"])
         objectives = {"sharpe": m["sharpe"], "return": m["return"], "sortino": m["sortino"],
                       "max_drawdown": m["max_drawdown"], "turnover": m["turnover"],
                       "cost_bps_estimate": float(m["turnover"] * one_way_bps)}
@@ -287,7 +366,13 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
              "objectives": objectives, "constraint_violations": violations,
              "regime_metrics": regime["regime_metrics"], "worst_regime_drawdown": regime["worst_regime_drawdown"],
              "regime_coverage": regime["regime_coverage"],
-             "generation": current_round["n"], "parents": list(birth_parents.get(key, []))}
+             "generation": current_round["n"], "parents": list(birth_parents.get(key, [])),
+             # Sprint2 §6 breakdown artifact (her candidate için).
+             "feature_quality": fq, "quant_fitness": quant_fitness,
+             "fitness_breakdown": {"candidate_id": key, "generation": current_round["n"],
+                                   "sharpe": m["sharpe"], "feature_quality": fq,
+                                   "max_drawdown": m["max_drawdown"], "turnover": m["turnover"],
+                                   "fitness": quant_fitness, **breakdown}}
         cache[key] = c
         return c
 
@@ -344,7 +429,14 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
                  "fitness_present":float(np.mean([c["fitness"] for c in feasible if name in c["features"]])) if any(name in c["features"] for c in feasible) else None,
                  "fitness_absent":float(np.mean([c["fitness"] for c in feasible if name not in c["features"]])) if any(name not in c["features"] for c in feasible) else None} for name in columns]
     return {"best":feasible[0],"candidates":candidates,"generations":generations,"pareto":pareto_front(candidates),"survival":survival,
-            "optimizer_access":"DEVELOPMENT_ONLY", "validation_method":spec.validation.method}
+            "optimizer_access":"DEVELOPMENT_ONLY", "validation_method":spec.validation.method,
+            # Sprint2 §8 reproducibility (holdout/test içermez).
+            "reproducibility": {"random_seed": spec.seed, "population_size": o.population,
+                                "generation_count": o.generations, "mutation_rate": o.mutation_rate,
+                                "crossover_rate": o.crossover_rate, "fitness_weights": dict(calc.weights),
+                                "feature_count_penalty": dict(calc.count_penalty),
+                                "use_quant_fitness": use_quant,
+                                "feature_universe": columns}}
 
 
 def _windowed_ic(series, y):
@@ -478,7 +570,9 @@ def _execute(df,spec,emit,artifact_dir):
     if m["sharpe"]<best["metrics"]["sharpe"]-.5: warnings.append("Test Sharpe, doğrulama Sharpe değerinden en az 0,5 puan düşük.")
     if m["position_changes"]<20: warnings.append("Test döneminde 20'den az pozisyon değişimi var.")
     return {"metrics":m,"validation_metrics":best["metrics"],"validation_test_sharpe_delta":m["sharpe"]-best["metrics"]["sharpe"],
-            "curve":curve,"execution":{**execution,"signal_to_fill":"signal close -> next open","timezone":reality.timezone,"spread_model":reality.spread_model,"max_leverage":reality.max_leverage,"max_position_fraction":reality.max_position_fraction},"optimization":optimization,"feature_analysis":analysis,"regimes":regimes,"transition":hmm.transmat_.tolist(),
+            "curve":curve,"stress_inputs":{"prediction_bps":(forecast*10000).tolist(),"actual_bps":(y[b:]*10000).tolist(),
+            "signal_timestamp":[x.index[b+i].isoformat() for i in range(len(ret))],
+            "test_high":test_bars[0].tolist(),"test_low":test_bars[1].tolist(),"threshold_bps":best["threshold_bps"]},"execution":{**execution,"signal_to_fill":"signal close -> next open","timezone":reality.timezone,"spread_model":reality.spread_model,"max_leverage":reality.max_leverage,"max_position_fraction":reality.max_position_fraction},"optimization":optimization,"feature_analysis":analysis,"regimes":regimes,"transition":hmm.transmat_.tolist(),
             "selected_features":best["features"],"selected_model":best["model"],"parameters":best["parameters"],"cost_sensitivity":sensitivities,
             "split":{"development":dev_end,"gap":spec.validation.gap,"test":len(x)-b,"development_end":x.index[dev_end-1].isoformat(),"test_start":x.index[b].isoformat(),"test_end":timestamps.iloc[-1].isoformat()},
             "test_policy":{"optimizer_access":False,"candidate_frozen_before_test":True,"test_evaluations":1,"repeated_research_warning":"Klonlar aynı test dönemini tekrar ölçebilir; bu dönem küresel olarak hiç görülmemiş holdout sayılmaz."},

@@ -56,6 +56,25 @@ def test_ic_decay_default_horizons():
     assert list(df.columns) == ["feature", "horizon", "ic", "sample_count"]
 
 
+def test_ic_decay_no_future_leak():
+    # Son barlardaki aşırı feature outlier'ı h=1'i etkiler ama h=20'de
+    # tail drop edildiği için etkisiz kalmalı (gelecek sızıntısı yok).
+    n = 60
+    base = np.arange(n, dtype=float)
+    f = pd.Series(base)
+    t = pd.Series(base)
+    f_tail = f.copy()
+    f_tail.iloc[-5:] = 1e6
+    df_clean = calculate_ic_decay(f, t, horizons=[1, 20])
+    df_tail = calculate_ic_decay(f_tail, t, horizons=[1, 20])
+    assert df_tail["sample_count"].iloc[0] >= df_tail["sample_count"].iloc[-1]
+    # h=1 tüm satırları kullanır -> outlier IC'yi bozar; h=20 tail'i atar.
+    assert abs(df_tail.set_index("horizon").loc[1, "ic"]) < abs(
+        df_clean.set_index("horizon").loc[1, "ic"])
+    assert df_tail.set_index("horizon").loc[20, "ic"] == \
+        df_clean.set_index("horizon").loc[20, "ic"] == pytest.approx(1.0)
+
+
 def test_sign_consistency():
     assert calculate_sign_consistency([0.07, 0.05, 0.09, 0.02]) == 1.0
     assert calculate_sign_consistency([0.05, -0.04, 0.03]) == 2 / 3

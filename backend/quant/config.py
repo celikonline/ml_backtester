@@ -18,7 +18,9 @@ DEFAULT_QUANT_CONFIG = {
     "retraining": {"mode": "rolling", "train_window": 500, "test_window": 50,
                    "step": 50, "initial_train_window": 500},
     "genetic_algorithm": {"fitness": {"sharpe_weight": 0.50, "feature_quality_weight": 0.20,
-                                      "drawdown_weight": 0.20, "turnover_weight": 0.10}},
+                                      "drawdown_weight": 0.20, "turnover_weight": 0.10},
+                          "feature_count_penalty": {"enabled": False, "max_features": 40,
+                                                    "penalty_weight": 0.05}},
     "calibration": {"enabled": False, "method": "isotonic"},
     "quantile": {"enabled": False, "quantiles": [0.1, 0.5, 0.9]},
     "pca": {"enabled": False, "variance_threshold": 0.95},
@@ -28,9 +30,10 @@ DEFAULT_QUANT_CONFIG = {
     "stress_test": {"slippage_bps": [0, 1, 2, 5, 10, 20], "latency_bars": [0, 1, 2, 3, 5]},
 }
 
-#: Registry'de saklanan yeni artifact tipleri (spec bolum 30).
+#: Registry'de saklanan yeni artifact tipleri (spec bolum 30 + sprint1 §7).
 QUANT_ARTIFACT_TYPES = ["ic_report", "ic_decay_report", "feature_stability_report",
-                        "feature_cluster_report", "ablation_report", "shap_stability_report",
+                        "feature_cluster_report", "selected_feature_list",
+                        "ablation_report", "shap_stability_report",
                         "purged_cv_report", "calibration_report", "stress_test_report"]
 
 

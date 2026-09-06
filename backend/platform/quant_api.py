@@ -15,7 +15,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from backend.quant.ablation import ablation_report, shap_stability_report
-from backend.quant.calibration import calibrate_probabilities, calibration_metrics
+from backend.quant.calibration import calibrate_probabilities, calibration_metrics, QuantilePredictor
 from backend.quant.clustering import cluster_features, prune_redundant_features
 from backend.quant.config import DEFAULT_QUANT_CONFIG, QUANT_ARTIFACT_TYPES
 from backend.quant.fitness import QuantFitnessCalculator
@@ -31,6 +31,7 @@ from backend.quant.stress import (
     DEFAULT_SLIPPAGE_BPS,
     cost_stress_matrix,
     latency_stress,
+    robustness_score,
     slippage_stress,
     systematic_stress,
 )
@@ -77,6 +78,13 @@ class ClusteringRequest(BaseModel):
     features: dict[str, list[float]]
     target: list[float] | None = None
     threshold: float = 0.85
+    experiment_id: str | None = None
+
+
+class PruneRequest(BaseModel):
+    features: dict[str, list[float]]
+    feature_metrics: list[dict]
+    clusters: dict[str, list[str]]
     experiment_id: str | None = None
 
 
@@ -133,6 +141,15 @@ class FitnessRequest(BaseModel):
     max_drawdown: float
     turnover: float
     weights: dict[str, float] | None = None
+    n_features: int | None = None
+    count_penalty: dict | None = None
+
+
+class QuantileRequest(BaseModel):
+    X: list[list[float]]
+    y: list[float]
+    quantiles: list[float] = Field(default_factory=lambda: [0.1, 0.5, 0.9])
+    experiment_id: str | None = None
 
 
 @router.post("/features/ic")
@@ -209,6 +226,19 @@ def api_clustering(body: ClusteringRequest):
         X = _frame(body.features)
         clusters = cluster_features(X, body.threshold)
         return envelope({"clusters": clusters}, body.experiment_id)
+    except ValueError as exc:
+        return fail(str(exc))
+
+
+@router.post("/features/prune")
+def api_prune(body: PruneRequest):
+    """Sprint1 §6: cluster başına en iyi feature'u seç (stateless)."""
+    try:
+        X = _frame(body.features)
+        metrics_df = pd.DataFrame(body.feature_metrics)
+        selected = prune_redundant_features(X, metrics_df, body.clusters)
+        return envelope({"selected": selected, "clusters": body.clusters},
+                        body.experiment_id)
     except ValueError as exc:
         return fail(str(exc))
 
@@ -312,20 +342,41 @@ def api_stress(body: StressRequest):
                                     stamps, reality, fx_backtest)
         worst = df.sort_values("sharpe").iloc[0].to_dict() if len(df) else {}
         base = df[df["scenario"] == "Normal"].iloc[0].to_dict() if len(df) else {}
+        worst_dd = float(df["max_drawdown"].min()) if len(df) else 0.0
         return envelope({"scenarios": df.to_dict("records"),
                          "sharpe_matrix": matrix["sharpe_matrix"].to_dict(),
-                         "base": base, "worst": worst}, body.experiment_id)
+                         "base": base, "worst": worst,
+                         "robustness_score": robustness_score(float(base.get("sharpe", 0.0)),
+                                                              float(worst.get("sharpe", 0.0)), worst_dd),
+                         "report_only": True}, body.experiment_id)
     except ValueError as exc:
         return fail(str(exc))
 
 
 @router.post("/optimization/fitness")
 def api_fitness(body: FitnessRequest):
-    calc = QuantFitnessCalculator(body.weights)
+    calc = QuantFitnessCalculator(body.weights, body.count_penalty)
     return envelope({"fitness": calc.calculate(body.sharpe, body.feature_quality,
-                                               body.max_drawdown, body.turnover),
+                                               body.max_drawdown, body.turnover,
+                                               body.n_features),
                      "breakdown": calc.breakdown(body.sharpe, body.feature_quality,
-                                                 body.max_drawdown, body.turnover)})
+                                                 body.max_drawdown, body.turnover,
+                                                 body.n_features)})
+
+
+@router.post("/quantile/predict")
+def api_quantile(body: QuantileRequest):
+    try:
+        if not body.X or not body.y or len(body.X) != len(body.y):
+            return fail("X ve y ayni uzunlukta ve bos olmamali.")
+        if len(body.X) > 2000 or len(body.X[0]) > 50:
+            return fail("En fazla 2000 satir ve 50 kolon gonderin.")
+        predictor = QuantilePredictor(tuple(body.quantiles)).fit(body.X, body.y)
+        frame = predictor.predict(body.X)
+        return envelope({"quantiles": list(predictor.quantiles),
+                         "predictions": frame.to_dict("records")}, body.experiment_id)
+    except ValueError as exc:
+        return fail(str(exc))
 
 
 @router.get("/quant/config")

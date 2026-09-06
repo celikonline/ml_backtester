@@ -92,6 +92,55 @@ def _extract_imports(source: str) -> set[str]:
     return imports
 
 
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name): return node.id
+    if isinstance(node, ast.Attribute): return node.attr
+    return ""
+
+
+def _static_analysis(cells: list[tuple[int, str, str]]) -> dict[str, Any]:
+    """Extract research concepts without executing notebook code."""
+    models: set[str] = set(); validation: set[str] = set(); backtest: set[str] = set()
+    datasets: set[str] = set(); features: set[str] = set(); metrics: set[str] = set()
+    targets: set[str] = set(); model_parameters: dict[str, dict[str, str]] = {}; warnings: list[dict[str, str]] = []
+    for idx, ctype, source in cells:
+        if ctype != "code": continue
+        low = source.lower()
+        for match in re.findall(r"(?:read_csv|read_parquet)\s*\(\s*['\"]([^'\"]+)", source, re.I): datasets.add(match)
+        for match in re.findall(r"(?:features?|feature_cols?)\s*=\s*\[([^\]]+)\]", source, re.I):
+            features.update(re.findall(r"['\"]([^'\"]+)['\"]", match))
+        targets.update(re.findall(r"(?:target|target_col|target_column|label)\s*=\s*['\"]([^'\"]+)", source, re.I))
+        try:
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    name = _call_name(node.func)
+                    model_map = {"XGBRegressor":"XGBoost", "XGBClassifier":"XGBoost", "LGBMRegressor":"LightGBM", "LGBMClassifier":"LightGBM", "RandomForestRegressor":"Random Forest", "RandomForestClassifier":"Random Forest", "Ridge":"Ridge", "GaussianHMM":"HMM", "HiddenMarkovModel":"HMM"}
+                    if name in model_map:
+                        models.add(model_map[name])
+                        model_parameters[name] = {kw.arg: ast.unparse(kw.value)[:200] for kw in node.keywords if kw.arg}
+                    val_map = {"TimeSeriesSplit":"Time Series Split", "PurgedKFold":"Purged K-Fold", "CombinatorialPurgedCV":"CPCV", "walk_forward":"Walk Forward", "walk_forward_validation":"Walk Forward"}
+                    if name in val_map: validation.add(val_map[name])
+        except SyntaxError:
+            pass
+        if re.search(r"(walk.?forward|time.?series.?split|purged|embargo|cross.?val|validation)", low): validation.add("Validation")
+        if re.search(r"(backtest|sharpe|drawdown|slippage|transaction.?cost|equity)", low): backtest.add("Backtest")
+        for metric in ("sharpe", "return", "drawdown", "sortino", "win_rate", "calmar"):
+            if metric in low: metrics.add(metric)
+        if re.search(r"scaler\.fit_transform\s*\(\s*(df|x|data)\s*\)", low):
+            warnings.append({"severity":"warning", "code":"POTENTIAL_SCALER_LEAKAGE", "detail":f"Cell {idx}: scaler may be fit before the train split."})
+        if re.search(r"train_test_split\s*\([^\n]*shuffle\s*=\s*true", low):
+            warnings.append({"severity":"warning", "code":"RANDOM_SPLIT", "detail":f"Cell {idx}: shuffle=True may break time-series ordering."})
+    if not any(v in validation for v in {"Walk Forward", "Time Series Split", "Purged K-Fold", "CPCV", "Validation"}):
+        warnings.append({"severity":"info", "code":"NO_TIME_VALIDATION", "detail":"No time-series validation method detected."})
+    if not backtest:
+        warnings.append({"severity":"info", "code":"NO_BACKTEST_COMPONENT", "detail":"No backtest or performance metric detected."})
+    return {"datasets":sorted(datasets), "target": sorted(targets)[0] if targets else None,
+            "features":sorted(features), "models":sorted(models), "model_parameters": model_parameters,
+            "regime_model": "Gaussian HMM" if "HMM" in models else None,
+            "validation":sorted(validation), "backtest":sorted(backtest), "metrics":sorted(metrics), "warnings":warnings}
+
+
 def inspect_notebook(nb_bytes: bytes) -> dict[str, Any]:
     """
     Run static analysis on a raw .ipynb file.
@@ -183,6 +232,9 @@ def inspect_notebook(nb_bytes: bytes) -> dict[str, Any]:
     critical = any(i["severity"] == "critical" for i in issues)
     compatible = not critical and parameter_cell_found
 
+    analysis = _static_analysis(cells)
+    issues.extend(analysis["warnings"])
+    issues.sort(key=lambda i: sev_rank.get(i["severity"], 99))
     return {
         "compatible": compatible,
         "python_version": python_version or "unknown",
@@ -190,4 +242,5 @@ def inspect_notebook(nb_bytes: bytes) -> dict[str, Any]:
         "imports": sorted(all_imports - {"", "__future__"}),
         "issues": issues,
         "cells_inspected": len(cells),
+        "analysis": analysis,
     }

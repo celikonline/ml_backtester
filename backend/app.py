@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from .engine import demo_prices, describe, preview_value, read_prices, run_experiment
 from .i18n import translate
 from .platform.scope import workspace_scope
+from .platform.api import actor, editor
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -78,7 +79,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/datasets")
+@app.get("/api/datasets", dependencies=[Depends(actor)])
 def list_datasets():
     df, name, demo = dataset("demo")
     records = [describe(df, "demo", name, demo)]
@@ -87,7 +88,7 @@ def list_datasets():
     return records
 
 
-@app.get("/api/datasets/{identifier}/preview")
+@app.get("/api/datasets/{identifier}/preview", dependencies=[Depends(actor)])
 def dataset_preview(identifier: str, page: int = 1, page_size: int = 25):
     """Return one bounded page of dataset rows for the preview table."""
     if page < 1 or page_size < 1 or page_size > 200:
@@ -106,7 +107,7 @@ def dataset_preview(identifier: str, page: int = 1, page_size: int = 25):
 
 
 @app.post("/api/datasets")
-async def upload_dataset(file: UploadFile):
+async def upload_dataset(file: UploadFile, who=Depends(editor)):
     raw = await file.read(25 * 1024 * 1024 + 1)
     await file.close()
     if len(raw) > 25 * 1024 * 1024:
@@ -164,7 +165,7 @@ def execute(identifier, df, config):
 
 
 @app.post("/api/runs", status_code=202)
-def create_run(config: RunConfig):
+def create_run(config: RunConfig, who=Depends(editor)):
     df, name, demo = dataset(config.dataset_id)
     with lock:
         if any(j["status"] in ["queued", "running"] for j in jobs.values()):
@@ -178,7 +179,7 @@ def create_run(config: RunConfig):
     return response
 
 
-@app.get("/api/runs")
+@app.get("/api/runs", dependencies=[Depends(actor)])
 def list_runs():
     stored = {}
     for path in DATA.glob("run-*.json"):
@@ -189,7 +190,7 @@ def list_runs():
     return sorted(stored.values(), key=lambda j: j["created_at"], reverse=True)
 
 
-@app.get("/api/runs/{identifier}")
+@app.get("/api/runs/{identifier}", dependencies=[Depends(actor)])
 def get_run(identifier: str):
     identifier = valid_id(identifier)
     with lock:
@@ -202,7 +203,7 @@ def get_run(identifier: str):
 
 
 @app.post("/api/runs/{identifier}/cancel")
-def cancel_run(identifier: str):
+def cancel_run(identifier: str, who=Depends(editor)):
     identifier = valid_id(identifier)
     with lock:
         if identifier not in jobs or jobs[identifier]["status"] not in ["queued", "running"]:
@@ -212,7 +213,7 @@ def cancel_run(identifier: str):
     return {"status": "cancelling"}
 
 
-@app.get("/api/runs/{identifier}/export")
+@app.get("/api/runs/{identifier}/export", dependencies=[Depends(actor)])
 def export_run(identifier: str):
     job = get_run(identifier)
     if job["status"] != "completed":
@@ -226,7 +227,7 @@ def export_run(identifier: str):
 
 
 @app.get("/api/project")
-def project():
+def project(who=Depends(actor)):
     # Only names and cell counts are exposed; notebook source may contain credentials.
     return {"notebooks": [{"name": p.name, "cells": len(json.loads(p.read_text(encoding="utf-8"))["cells"])} for p in ROOT.glob("*.ipynb")],
             "scope": "OHLC → teknik özellikler → 3 uzman → Gaussian HMM → doğrulamada ağırlık seçimi → maliyetli test"}

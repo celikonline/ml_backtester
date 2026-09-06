@@ -51,3 +51,43 @@ def test_api_quant_config():
     r = client.get("/api/quant/config")
     assert r.status_code == 200
     assert "stress_test" in r.json()["data"]["config"]
+
+
+def test_api_quantile():
+    import numpy as np
+    rng = np.random.default_rng(5)
+    X = rng.normal(size=(80, 3))
+    y = X[:, 0] + rng.normal(scale=0.1, size=80)
+    r = client.post("/api/quantile/predict", json={"X": X.tolist(), "y": y.tolist()})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["data"]["quantiles"] == [0.1, 0.5, 0.9]
+    assert len(body["data"]["predictions"]) == 80
+
+
+def test_api_fitness():
+    r = client.post("/api/optimization/fitness",
+                    json={"sharpe": 1.5, "feature_quality": 0.7,
+                          "max_drawdown": -0.1, "turnover": 8.0})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert "breakdown" in body["data"]
+
+
+def test_api_prune():
+    r = client.post("/api/features/prune", json={
+        "features": {"a": [1.0] * 10, "b": [2.0] * 10},
+        "feature_metrics": [{"feature": "a", "abs_ic": 0.5},
+                            {"feature": "b", "abs_ic": 0.1}],
+        "clusters": {"cluster_1": ["a", "b"]}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["data"]["selected"] == ["a"]
+
+
+def test_api_quant_config_has_selected_list():
+    r = client.get("/api/quant/config")
+    assert "selected_feature_list" in r.json()["data"]["artifacts"]

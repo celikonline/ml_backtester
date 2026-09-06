@@ -95,8 +95,10 @@ export default function AuthPage() {
       if (mode === 'login') await login(email, password, remember);
       else await register(name, email, password);
     } catch (err) {
-      const key = err instanceof Error ? err.message : '';
-      setFormError(t(key.startsWith('auth.') ? key : 'auth.genericError'));
+      const message = err instanceof Error ? err.message : '';
+      // Preserve server-side validation/conflict messages. Previously every
+      // non-i18n backend error became the unhelpful generic error banner.
+      setFormError(message.startsWith('auth.') ? t(message) : message || t('auth.genericError'));
     } finally {
       setBusy(false);
     }

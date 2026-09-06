@@ -30,33 +30,35 @@ def _run(predictions, actuals, timestamps, reality: dict, backtest_fn,
 
 
 def slippage_stress(predictions, actuals, timestamps, base_reality: dict,
-                    backtest_fn, levels_bps=None, high=None, low=None) -> pd.DataFrame:
+                    backtest_fn, levels_bps=None, high=None, low=None,
+                    threshold: float = 0.0) -> pd.DataFrame:
     """Her slippage seviyesinde ayni motorla backtest."""
     levels_bps = list(levels_bps) if levels_bps is not None else list(DEFAULT_SLIPPAGE_BPS)
     rows = []
     for bps in levels_bps:
         reality = {**base_reality, "slippage_bps": float(bps)}
-        m = _run(predictions, actuals, timestamps, reality, backtest_fn, high, low)
+        m = _run(predictions, actuals, timestamps, reality, backtest_fn, high, low, threshold)
         rows.append({"slippage_bps": bps, **m})
     return pd.DataFrame(rows)
 
 
 def latency_stress(signals_or_predictions, actuals, timestamps, base_reality: dict,
-                   backtest_fn, latency_bars=None, high=None, low=None) -> pd.DataFrame:
+                   backtest_fn, latency_bars=None, high=None, low=None,
+                   threshold: float = 0.0) -> pd.DataFrame:
     """executed_signal = signal.shift(latency_bars) yaklasimi: tahmini kaydirir."""
     latency_bars = list(latency_bars) if latency_bars is not None else list(DEFAULT_LATENCY_BARS)
     preds = np.asarray(signals_or_predictions, dtype=float)
     rows = []
     for lag in latency_bars:
         shifted = pd.Series(preds).shift(int(lag)).fillna(0.0).to_numpy()
-        m = _run(shifted, actuals, timestamps, dict(base_reality), backtest_fn, high, low)
+        m = _run(shifted, actuals, timestamps, dict(base_reality), backtest_fn, high, low, threshold)
         rows.append({"latency_bars": lag, **m})
     return pd.DataFrame(rows)
 
 
 def cost_stress_matrix(predictions, actuals, timestamps, base_reality: dict,
                        backtest_fn, commissions=None, slippages=None,
-                       high=None, low=None) -> dict:
+                       high=None, low=None, threshold: float = 0.0) -> dict:
     """Commission x Slippage matrisinde Sharpe (+ return/drawdown artifact)."""
     commissions = list(commissions) if commissions is not None else [0, 2, 5, 10]
     slippages = list(slippages) if slippages is not None else [0, 2, 5, 10]
@@ -65,17 +67,61 @@ def cost_stress_matrix(predictions, actuals, timestamps, base_reality: dict,
     for c in commissions:
         for s in slippages:
             reality = {**base_reality, "commission_bps": float(c), "slippage_bps": float(s)}
-            m = _run(predictions, actuals, timestamps, reality, backtest_fn, high, low)
+            m = _run(predictions, actuals, timestamps, reality, backtest_fn, high, low, threshold)
             sharpe.loc[c, s] = m["sharpe"]
             detail[f"{c}x{s}"] = m
     return {"sharpe_matrix": sharpe, "details": detail,
             "commissions": commissions, "slippages": slippages}
 
 
+def robustness_score(base_sharpe: float, worst_stress_sharpe: float,
+                     worst_drawdown: float) -> float:
+    """Sprint 4 madde 7: raporlama skoru, GA fitness'a baglanmaz.
+
+    robustness = 0.40*norm(base) + 0.30*norm(worst) - 0.30*norm_dd
+    norm(x): buyuk Sharpe buyuklugune gore olceklenir; norm_dd = min(1, |dd|).
+    """
+    scale = max(abs(base_sharpe), abs(worst_stress_sharpe), 1e-9)
+    norm_dd = min(1.0, abs(worst_drawdown))
+    return float(0.40 * (base_sharpe / scale) + 0.30 * (worst_stress_sharpe / scale)
+                 - 0.30 * norm_dd)
+
+
+def experiment_stress_report(predictions, actuals, timestamps, base_reality: dict,
+                             backtest_fn, high=None, low=None,
+                             threshold: float = 0.0) -> dict:
+    """Deney test donemi icin tek cagrida butun stres raporu.
+
+    Ayni motor (backtest_fn) farkli parametrelerle cagrilir; motor kopyalanmaz.
+    Donus JSON-serializable'dir ve stress_test_report.json artifact'idir.
+    """
+    preds = np.asarray(predictions, dtype=float)
+    slip = slippage_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low)
+    lat = latency_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low)
+    scen = systematic_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low)
+    matrix = cost_stress_matrix(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low)
+    scenarios = scen.to_dict("records")
+    base = next((r for r in scenarios if r["scenario"] == "Normal"), scenarios[0] if scenarios else {})
+    worst = min(scenarios, key=lambda r: r["sharpe"]) if scenarios else {}
+    worst_dd = min([r["max_drawdown"] for r in scenarios] + [0.0])
+    score = robustness_score(float(base.get("sharpe", 0.0)),
+                             float(worst.get("sharpe", 0.0)), float(worst_dd))
+    return {"base": base, "worst": worst, "robustness_score": score,
+            "slippage_matrix": slip.to_dict("records"),
+            "latency_curve": lat.to_dict("records"),
+            "scenarios": scenarios,
+            "cost_matrix": {"sharpe": matrix["sharpe_matrix"].to_dict(),
+                            "details": matrix["details"],
+                            "commissions": matrix["commissions"],
+                            "slippages": matrix["slippages"]},
+            "report_only": True}
+
+
 def systematic_stress(predictions, actuals, timestamps, base_reality: dict,
                       backtest_fn, high=None, low=None,
                       scenarios: list[str] | None = None,
-                      volatility: np.ndarray | None = None) -> pd.DataFrame:
+                      volatility: np.ndarray | None = None,
+                      threshold: float = 0.0) -> pd.DataFrame:
     """Ayni motorla 7 senaryo (spec bolum 24). Volatilite/Likidite proxy'leri
     maliyet carpaniyla modellenir (yeni veri kaynagi yok)."""
     scenarios = list(scenarios) if scenarios else list(SYSTEMATIC_SCENARIOS)
