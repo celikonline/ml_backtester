@@ -289,6 +289,28 @@ def router(dataset_loader, datasets_list):
     @api.get("/experiments/{identifier}/result")
     def result(identifier:str,s=Depends(service)): return s.result(identifier)
 
+    @api.get("/experiments/{identifier}/dashboard/allocation")
+    def dashboard_allocation(identifier:str,s=Depends(service)): return s.dashboard_allocation(identifier)
+
+    @api.get("/experiments/{identifier}/dashboard/exposure")
+    def dashboard_exposure(identifier:str,s=Depends(service)): return s.dashboard_exposure(identifier)
+
+    @api.get("/experiments/{identifier}/dashboard/models")
+    def dashboard_models(identifier:str,s=Depends(service)): return s.dashboard_models(identifier)
+
+    @api.get("/experiments/{identifier}/dashboard/features/importance")
+    def dashboard_feature_importance(identifier:str,s=Depends(service)): return s.dashboard_feature_importance(identifier)
+
+    @api.get("/experiments/{identifier}/dashboard/optimization/genetic")
+    def dashboard_optimization(identifier:str,s=Depends(service)): return s.dashboard_optimization(identifier)
+
+    @api.get("/experiments/{identifier}/dashboard/trades")
+    def dashboard_trades(identifier:str,page:int=Query(default=1,ge=1),page_size:int=Query(default=100,ge=1,le=1000),s=Depends(service)):
+        return s.dashboard_trades(identifier,page,page_size)
+
+    @api.get("/experiments/{identifier}/dashboard/signal-confidence")
+    def dashboard_confidence(identifier:str,s=Depends(service)): return s.dashboard_confidence(identifier)
+
     @api.get("/experiments/{identifier}/metrics")
     def metrics(identifier:str,s=Depends(service)):
         r=s.result(identifier)

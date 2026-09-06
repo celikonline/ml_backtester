@@ -3,7 +3,7 @@ import {Bot, Copy, Plus, ArrowLeft, Play, LockKeyhole, ArrowUp, ArrowDown, X, Sq
 import {request} from './platform-api';
 import type {Experiment} from './platform-api';
 import {useLang} from './i18n';
-import './assistants.css';
+import './app/styles/assistants.css';
 
 type Config = {name:string;description:string;system_prompt:string;stage:string;permissions:string[];auto_backtest:boolean;chain:string[]};
 type Assistant = Config & {id:string;template:boolean;author:string};

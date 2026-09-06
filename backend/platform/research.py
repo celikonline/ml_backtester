@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from hmmlearn.hmm import GaussianHMM
-from scipy.stats import spearmanr
+from scipy.stats import kurtosis, norm, skew, spearmanr
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
@@ -85,9 +85,16 @@ def registry(df=None):
 def score(ret, signal, annual):
     m = metrics(ret, signal, annual)
     downside = np.sqrt(np.mean(np.minimum(ret, 0) ** 2))
+    observed_sharpe=float(m.get("sharpe", 0.0))
+    n=max(2,len(ret)); g=float(skew(ret,bias=False)) if n>2 else 0.0; k=float(kurtosis(ret,fisher=False,bias=False)) if n>3 else 3.0
+    denominator=max(1e-12, 1.0-g*observed_sharpe+((k-1.0)/4.0)*(observed_sharpe**2))
+    psr=float(norm.cdf((observed_sharpe*np.sqrt(n-1))/np.sqrt(denominator)))
+    total_return=float(m.get("return",0.0))
+    annualized=(1.0+total_return)**(annual/max(1,n))-1.0 if total_return>-1.0 else -1.0
     m.update(sortino=float(np.mean(ret) / downside * np.sqrt(annual)) if downside > 1e-12 else 0.0,
              volatility=float(np.std(ret) * np.sqrt(annual)), exposure=float(np.mean(signal != 0)),
-             turnover=float(np.abs(np.diff(signal, prepend=0)).sum() + abs(signal[-1])))
+             turnover=float(np.abs(np.diff(signal, prepend=0)).sum() + abs(signal[-1])),
+             annualized_return=float(annualized), psr=psr)
     return m
 
 
@@ -547,8 +554,20 @@ def _execute(df,spec,emit,artifact_dir):
     peak = np.maximum.accumulate(np.r_[spec.backtest.capital,equity])[1:]
     baseline = spec.backtest.capital*np.cumprod(1+benchmark)
     timestamps = pd.Series(df.index,index=df.index).shift(-2).reindex(x.index[b:])
+    forecast_scale=max(float(np.std(forecast[:b])),1e-12)
+    confidence=np.clip(np.abs(forecast[b:])/(3.0*forecast_scale),0.0,1.0)
     curve = [{"timestamp":t.isoformat(),"signal_timestamp":x.index[b+i].isoformat(),"equity":float(equity[i]),"benchmark":float(baseline[i]),
-              "drawdown":float(equity[i]/peak[i]-1),"return":float(ret[i]),"signal":int(signal[i]),"prediction_bps":float(forecast[i]*10000)} for i,t in enumerate(timestamps)]
+              "drawdown":float(equity[i]/peak[i]-1),"return":float(ret[i]),"signal":int(signal[i]),"prediction_bps":float(forecast[i]*10000),
+              "confidence":float(confidence[i]),"close":float(df.loc[x.index[b+i],"close"])} for i,t in enumerate(timestamps)]
+    trades=[]; previous=0
+    for index,row in enumerate(curve):
+        current=int(row["signal"])
+        if current==previous: continue
+        prior_equity=float(curve[index-1]["equity"]) if index else float(spec.backtest.capital)
+        trades.append({"timestamp":row["timestamp"],"signal_timestamp":row["signal_timestamp"],"side":"long" if current>0 else ("short" if current<0 else "flat"),
+                      "price":row["close"],"return":row["return"],"pnl":float(row["equity"]-prior_equity),"signal":current,
+                      "confidence":row["confidence"],"source":"backtest_curve","record_type":"position_change"})
+        previous=current
     # HMM is descriptive here; fitted on development data, never on test.
     emit("stage",{"status":"ANALYZING","progress":94,"message":"Rejimler, özellik kararlılığı ve maliyet duyarlılığı"})
     states = full_states[b:]
@@ -570,7 +589,7 @@ def _execute(df,spec,emit,artifact_dir):
     if m["sharpe"]<best["metrics"]["sharpe"]-.5: warnings.append("Test Sharpe, doğrulama Sharpe değerinden en az 0,5 puan düşük.")
     if m["position_changes"]<20: warnings.append("Test döneminde 20'den az pozisyon değişimi var.")
     return {"metrics":m,"validation_metrics":best["metrics"],"validation_test_sharpe_delta":m["sharpe"]-best["metrics"]["sharpe"],
-            "curve":curve,"stress_inputs":{"prediction_bps":(forecast*10000).tolist(),"actual_bps":(y[b:]*10000).tolist(),
+            "curve":curve,"trades":trades,"signal_confidence":{"source":"normalized_prediction_magnitude","calibrated":False,"scale":forecast_scale},"stress_inputs":{"prediction_bps":(forecast*10000).tolist(),"actual_bps":(y[b:]*10000).tolist(),
             "signal_timestamp":[x.index[b+i].isoformat() for i in range(len(ret))],
             "test_high":test_bars[0].tolist(),"test_low":test_bars[1].tolist(),"threshold_bps":best["threshold_bps"]},"execution":{**execution,"signal_to_fill":"signal close -> next open","timezone":reality.timezone,"spread_model":reality.spread_model,"max_leverage":reality.max_leverage,"max_position_fraction":reality.max_position_fraction},"optimization":optimization,"feature_analysis":analysis,"regimes":regimes,"transition":hmm.transmat_.tolist(),
             "selected_features":best["features"],"selected_model":best["model"],"parameters":best["parameters"],"cost_sensitivity":sensitivities,

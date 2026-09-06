@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { DEMO_USER, useAuth } from './auth';
 import { useLang } from './i18n';
-import './auth.css';
+import './app/styles/auth.css';
 
 type Mode = 'login' | 'register';
 

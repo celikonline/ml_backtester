@@ -680,6 +680,68 @@ class ExperimentService:
         if item["status"]!="COMPLETED" or not item["run"]["result_path"]: raise DomainError("Sonuç henüz hazır değil.",409,"result_not_ready")
         return json.loads(self.safe_path(item["run"]["result_path"]).read_text(encoding="utf-8"))
 
+    def dashboard_allocation(self, identifier):
+        """Return position-state allocation derived from the persisted signal curve.
+
+        The current engine is single-asset and does not persist portfolio weights;
+        exposing the provenance here is preferable to presenting inferred weights
+        as if they were execution records.
+        """
+        item=self.get(identifier); result=self.result(identifier); curve=result.get("curve") or []
+        total=max(1,len(curve)); signals=[float(row.get("signal",0)) for row in curve]
+        return {"source":"curve.signal","asset":item["specification"].get("symbol","EURUSD"),"derived":True,
+                "items":[{"name":"Long","value":sum(v>0 for v in signals)/total},{"name":"Short","value":sum(v<0 for v in signals)/total},{"name":"Flat","value":sum(v==0 for v in signals)/total}]}
+
+    def dashboard_exposure(self, identifier):
+        item=self.get(identifier); result=self.result(identifier); signals=[float(row.get("signal",0)) for row in result.get("curve") or []]
+        total=max(1,len(signals))
+        return {"source":"curve.signal","asset":item["specification"].get("symbol","EURUSD"),"derived":True,
+                "net":sum(signals)/total,"gross":sum(abs(v) for v in signals)/total,
+                "long_share":sum(v>0 for v in signals)/total,"short_share":sum(v<0 for v in signals)/total,"flat_share":sum(v==0 for v in signals)/total}
+
+    def dashboard_models(self, identifier):
+        result=self.result(identifier); optimization=result.get("optimization") or {}
+        candidates=optimization.get("candidates") or optimization.get("pareto") or []
+        rows=[]
+        for candidate in candidates:
+            rows.append({"model":candidate.get("model","candidate"),"metrics":candidate.get("metrics",{}),"fitness":candidate.get("fitness"),"selected":bool(candidate.get("selected"))})
+        return {"selected_model":result.get("selected_model"),"items":rows}
+
+    def dashboard_feature_importance(self, identifier):
+        result=self.result(identifier); features=(result.get("feature_analysis") or {}).get("features") or []
+        rows=sorted(({"feature":f.get("feature"),"importance":abs(float(f.get("ic",0))),"ic":f.get("ic"),"method":"abs(IC)"} for f in features),key=lambda x:x["importance"],reverse=True)
+        return {"source":"feature_analysis.ic","derived":True,"items":rows}
+
+    def dashboard_optimization(self, identifier):
+        result=self.result(identifier)
+        return result.get("optimization") or {"generations":[]}
+
+    def dashboard_trades(self, identifier, page=1, page_size=100):
+        """Expose persisted signal changes as an auditable trade-like timeline.
+
+        These are position changes, not broker fills. The response explicitly
+        labels the source so consumers do not confuse it with execution data.
+        """
+        result=self.result(identifier); persisted=result.get("trades")
+        if isinstance(persisted,list):
+            start=max(0,(page-1)*page_size); end=start+page_size
+            return {"page":page,"page_size":page_size,"total":len(persisted),"source":"backtest_curve","derived":False,"items":persisted[start:end]}
+        curve=result.get("curve") or []; items=[]; previous=0
+        for index,row in enumerate(curve):
+            signal=int(row.get("signal",0));
+            if signal==previous: continue
+            equity=float(row.get("equity",0)); prior=float(curve[index-1].get("equity",equity)) if index else equity
+            items.append({"timestamp":row.get("timestamp"),"signal_timestamp":row.get("signal_timestamp"),"side":"long" if signal>0 else ("short" if signal<0 else "flat"),"price":row.get("close"),"return":row.get("return"),"pnl":equity-prior,"signal":signal,"source":"curve.signal","record_type":"position_change"})
+            previous=signal
+        start=max(0,(page-1)*page_size); end=start+page_size
+        return {"page":page,"page_size":page_size,"total":len(items),"source":"curve.signal","derived":True,"items":items[start:end]}
+
+    def dashboard_confidence(self, identifier):
+        result=self.result(identifier); curve=result.get("curve") or []
+        metadata=result.get("signal_confidence") or {}
+        return {"source":metadata.get("source","curve.confidence"),"calibrated":bool(metadata.get("calibrated",False)),
+                "items":[{"timestamp":row.get("timestamp"),"confidence":row.get("confidence"),"prediction_bps":row.get("prediction_bps"),"signal":row.get("signal")} for row in curve if "confidence" in row]}
+
     def stress_report(self, identifier):
         """Sprint 4: run the same engine over the frozen test slice with
         stressed costs/latency; persist stress_test_report.json (report-only)."""

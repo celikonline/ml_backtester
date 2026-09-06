@@ -6,12 +6,13 @@ import ResearchPlatform from './ResearchPlatform';
 import NotebookLab from './NotebookLab';
 import AccountPage from './AccountPage';
 import AuthPage from './AuthPage';
+import { ExperimentResultsPage } from './features/quant-lab/experiment-results';
 import { getToken, useAuth } from './auth';
 import { useLang } from './i18n';
 import type { Lang } from './i18n';
 import { useWorkspace } from './workspace';
 import { getStoredWorkspaceId } from './ws-store';
-import './workspace.css';
+import './app/styles/workspace.css';
 
 const colors = ['#55dfb0','#8b91f3','#efb66c','#62b5ef','#e78fbe'];
 
@@ -153,7 +154,7 @@ function App(){
   const [page,setPage]=useState('platform'),[modal,setModal]=useState(false),[workspaceModal,setWorkspaceModal]=useState(false),[newWsName,setNewWsName]=useState(''),[newWsMarket,setNewWsMarket]=useState('FX'),[error,setError]=useState(''),[busy,setBusy]=useState(false),[uploading,setUploading]=useState(false),[online,setOnline]=useState(false),[chartMode,setChartMode]=useState('equity');
   const { current: workspace, workspaces, switchWorkspace, createWorkspace, archiveWorkspace, error: wsError } = useWorkspace();
   const wsId = workspace?.id ?? null;
-  const [platformNew,setPlatformNew]=useState(0);
+  const [platformNew,setPlatformNew]=useState(0),[resultsExperimentId,setResultsExperimentId]=useState<string|null>(null);
   const [histQuery,setHistQuery]=useState(''),[histStatus,setHistStatus]=useState(''),[histDataset,setHistDataset]=useState(''),[histView,setHistView]=useState<'grid'|'list'>('grid');
   const [datasetQuery,setDatasetQuery]=useState(''),[datasetSource,setDatasetSource]=useState(''),[datasetView,setDatasetView]=useState<'grid'|'list'>('grid');
   const [theme,setTheme]=useState<'dark'|'light'>(()=>localStorage.getItem('regimelab.theme')==='light'?'light':'dark');
@@ -220,7 +221,7 @@ function App(){
   async function createAndSwitch(){const name=newWsName.trim();if(!name)return;setError('');try{await createWorkspace(name.slice(0,120),newWsMarket.trim().slice(0,16));setNewWsName('');setWorkspaceModal(false);}catch(e){setError((e as Error).message);}}
   async function archiveAndRefresh(id:string){if(!window.confirm(t('ws.confirmArchive')))return;setError('');try{await archiveWorkspace(id);}catch(e){setError((e as Error).message);}}
   const nav=[['platform',t('nav.platform'),FlaskConical],['overview',t('nav.overview'),LayoutDashboard],['data',t('nav.data'),Database],['models',t('nav.models'),Layers3],['regimes',t('nav.regimes'),Activity],['notebook','Notebook Lab',BookOpen],['history',t('nav.history'),Clock3]] as const;
-  const heading:Record<string,string>={platform:t('heading.platform'),overview:t('heading.overview'),data:t('heading.data'),models:t('heading.models'),regimes:t('heading.regimes'),history:t('heading.history'),method:t('heading.method'),notebook:'Notebook Lab',account:t('nav.account')};
+  const heading:Record<string,string>={platform:t('heading.platform'),overview:t('heading.overview'),data:t('heading.data'),models:t('heading.models'),regimes:t('heading.regimes'),history:t('heading.history'),method:t('heading.method'),notebook:'Notebook Lab',account:t('nav.account'),'experiment-results':'Experiment Results'};
   if(!authReady)return <div className="auth-loading"><Loader2 size={26} className="spin"/></div>;
   if(!authUser)return <AuthPage/>;
   return <div className="app-shell">
@@ -339,7 +340,8 @@ function App(){
       <div className="page-heading"><div><div className="eyebrow">EUR/USD <span>·</span> {lang==='en'?'REGIME-AWARE MODELING':'REJİM ODAKLI MODELLEME'}</div><h1>{page==='overview'?t('hero.title'):heading[page]}</h1><p>{page==='overview'?t('hero.subOverview'):t('hero.subOther')}</p></div><button className="primary" onClick={()=>{setError('');if(page==='platform')setPlatformNew(n=>n+1);else setModal(true);}} disabled={page!=='platform'&&active}><Plus size={17}/>{t('action.newExperiment')}</button></div>
       {error&&<div className="alert" role="alert"><span>{error}</span><button aria-label={t('alert.closeError')} onClick={()=>setError('')}><X size={16}/></button></div>}
       <input ref={uploadRef} type="file" accept=".csv,text/csv" hidden onChange={e=>upload(e.target.files?.[0])}/>
-      {page==='platform'&&<ResearchPlatform newRequest={platformNew}/>}
+      {page==='platform'&&<ResearchPlatform newRequest={platformNew} onOpenResults={id=>{setResultsExperimentId(id);setPage('experiment-results');}}/>}
+      {page==='experiment-results'&&resultsExperimentId&&<ExperimentResultsPage experimentId={resultsExperimentId} onBack={()=>setPage('platform')}/>}
       {page==='notebook'&&<NotebookLab/>}
       {page==='account'&&<AccountPage/>}
       {page==='overview'&&<>
