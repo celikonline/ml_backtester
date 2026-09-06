@@ -1,0 +1,11 @@
+.experiment-wizard fieldset {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 16px 0;
+  min-width: 0;
+}
+.experiment-wizard legend { font-size: 13px; padding: 0 8px; }
+.experiment-wizard fieldset h3 { margin: 18px 0 10px; }
+.experiment-wizard fieldset p { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.experiment-wizard fieldset .secondary { margin-top: 12px; }

@@ -149,12 +149,7 @@ def router(dataset_loader, datasets_list):
 
     @api.get("/research/ledger")
     def research_ledger(page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=500), workspace_id: str|None=None,s=Depends(service)):
-        with s.engine.connect() as con:
-            total = con.execute(select(func.count()).select_from(s.research_trial_events)).scalar()
-        offset = (page - 1) * page_size
-        with s.engine.connect() as con:
-            rows = con.execute(select(s.research_trial_events).order_by(s.research_trial_events.c.id.desc()).limit(page_size).offset(offset)).mappings().all()
-        return {"page": page, "page_size": page_size, "total": total or 0, "items": [dict(r) for r in rows]}
+        return s.ledger(page=page, page_size=page_size, workspace_id=workspace_id)
 
     @api.get("/workspaces")
     def list_workspaces(include_archived:bool=False,s=Depends(service)): return s.list_workspaces(include_archived)
@@ -193,6 +188,30 @@ def router(dataset_loader, datasets_list):
     def features(q:str="",dataset_id:str|None=None):
         df = dataset_loader(dataset_id)[0] if dataset_id else None
         return [f for f in registry(df) if q.lower() in f["name"].lower()]
+
+    @api.post("/backtest-preview")
+    def backtest_preview(body: ExperimentSpec):
+        import pandas as pd
+        from .research import feature_frame
+        from .db import STORAGE
+        df = dataset_loader(body.dataset_id)[0]
+        if len(df) > POLICY['max_rows']:
+            raise DomainError("Önizleme veri sınırı aşıldı.",422)
+        if body.timeframe != 'native':
+            if pd.Timedelta(body.timeframe) < df.index.to_series().diff().median():
+                raise DomainError("Kaynak periyodundan küçük aralık seçilemez.",422)
+            aggregation = {c:'last' for c in df.columns}
+            aggregation.update(open='first',high='max',low='min',close='last')
+            df = df.resample(body.timeframe).agg(aggregation).dropna(subset=['open','high','low','close'])
+        if body.period.end:
+            df = df.loc[df.index < pd.Timestamp(body.period.end,tz='UTC')+pd.Timedelta(days=1)]
+        frame = feature_frame(df, STORAGE/'feature_cache')
+        if body.period.start:
+            frame = frame.loc[frame.index >= pd.Timestamp(body.period.start,tz='UTC')]
+        if frame.empty: raise DomainError("Seçilen aralıkta indikatör üretmek için yeterli veri yok.",422)
+        return {'rows':len(frame),'start':frame.index[0].isoformat(),'end':frame.index[-1].isoformat(),
+                'features':[{'id':name,'valid_rows':int(frame[name].notna().sum())} for name in frame],
+                'note':'Önizleme bar sayısıdır; hedef üretimi ve seçilen indikatörlerin eksikleri eğitimde ek satır azaltabilir.'}
 
     @api.get("/feature-families")
     def feature_families(): return family_registry()

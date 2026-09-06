@@ -90,7 +90,7 @@ function fmtDuration(s: number | null) {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export default function NotebookLab() {
+export default function NotebookLab({ onExperimentCreated }: { onExperimentCreated?: () => void }) {
   const { currentId: wsId } = useWorkspace();
   const { t } = useLang();
 
@@ -298,6 +298,7 @@ export default function NotebookLab() {
       const created = await request<{ code?: string; name?: string }>(`/workspaces/${wsId}/notebooks/${selectedNb.id}/convert-to-experiment`, 'POST', { confirm: true });
       setNotice(`Deney oluşturuldu: ${created.code || created.name || 'başarılı'}`);
       await loadAll();
+      onExperimentCreated?.();
     } catch (e) { setError(String(e)); }
   }
 

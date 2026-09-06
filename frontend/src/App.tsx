@@ -6,6 +6,7 @@ import ResearchPlatform from './ResearchPlatform';
 import NotebookLab from './NotebookLab';
 import AccountPage from './AccountPage';
 import AuthPage from './AuthPage';
+import ChatBot from './ChatBot';
 import { ExperimentResultsPage } from './features/quant-lab/experiment-results';
 import { getToken, useAuth } from './auth';
 import { useLang } from './i18n';
@@ -114,8 +115,11 @@ export async function api<T>(url:string, options?:RequestInit, lang: Lang = 'tr'
   const langHeader = { 'Accept-Language': lang, ...(wsId?{'X-Workspace-Id':wsId}:{}), ...(authToken?{Authorization:`Bearer ${authToken}`}:{}) };
   const merged: RequestInit = { ...options, headers: { ...(options?.headers as Record<string,string> | undefined), ...langHeader } };
   const response = await fetch(`/api${url}`,merged);
-  if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(typeof body.detail==='string'?body.detail:(lang==='en'?'Request failed. Check the parameters.':'İstek tamamlanamadı. Parametreleri kontrol edin.'));}
-  return response.json();
+  const text=await response.text();
+  let body: any={};
+  try{body=text?JSON.parse(text):{};}catch{body={detail:text};}
+  if(!response.ok){throw new Error(typeof body.detail==='string'&&body.detail?body.detail:(lang==='en'?'Request failed. Check the parameters.':'İstek tamamlanamadı. Parametreleri kontrol edin.'));}
+  return body as T;
 }
 
 function Performance({result,mode,theme}:{result:Result;mode:string;theme:'dark'|'light'}){
@@ -342,7 +346,7 @@ function App(){
       <input ref={uploadRef} type="file" accept=".csv,text/csv" hidden onChange={e=>upload(e.target.files?.[0])}/>
       {page==='platform'&&<ResearchPlatform newRequest={platformNew} onOpenResults={id=>{setResultsExperimentId(id);setPage('experiment-results');}}/>}
       {page==='experiment-results'&&resultsExperimentId&&<ExperimentResultsPage experimentId={resultsExperimentId} onBack={()=>setPage('platform')}/>}
-      {page==='notebook'&&<NotebookLab/>}
+      {page==='notebook'&&<NotebookLab onExperimentCreated={()=>{setPage('platform');setPlatformNew(n=>n+1);}}/>}
       {page==='account'&&<AccountPage/>}
       {page==='overview'&&<>
         <div className="dataset-strip"><div className="pair-icon">€<span>$</span></div><div className="pair-title"><strong>EUR / USD</strong><span>{t('pair.quote')}</span></div><span className="divider"/><div className="strip-detail"><small>{t('strip.source')}</small><b>{job?job.dataset_name:selected?.name||t('strip.loading')}</b></div><div className="strip-detail hide-small"><small>{t('strip.experiment')}</small><b>{job?`#${job.id.slice(0,8)}`:t('strip.notStarted')}</b></div><span className={`badge ${job?.demo??selected?.demo?'amber':''}`}>{(job?.demo??selected?.demo)?t('strip.synthetic'):t('strip.uploaded')}</span></div>
@@ -365,6 +369,7 @@ function App(){
       {page==='history'&&<HistoryCatalog history={history} filtered={histFiltered} datasets={histDatasets} query={histQuery} setQuery={setHistQuery} status={histStatus} setStatus={setHistStatus} dataset={histDataset} setDataset={setHistDataset} view={histView} setView={setHistView} active={active} jobId={job?.id} onOpen={openRun} onNew={()=>setModal(true)} />}
       {page==='method'&&<div className="method-layout"><section className="panel prose"><span className="eyebrow">{t('method.kicker')}</span><h2>{t('method.title')}</h2><p>{t('method.intro')}</p><h3>{t('method.notebooks')}</h3>{project?.notebooks.map(n=><div className="notebook" key={n.name}><BookOpen size={20}/><div><b>{n.name}</b><p>{n.name.startsWith('optimus')?t('method.nbOptimus'):t('method.nbTez')}</p></div><span>{n.cells} {t('method.cells')}</span></div>)}<h3>{t('method.flow')}</h3><p>{project?.scope}</p><ol>{(result?.notes||[t('method.note1'),t('method.note2'),t('method.note3'),t('method.note4'),t('method.note5')]).map(n=><li key={n}>{n}</li>)}</ol><h3>{t('method.findings')}</h3><p>{t('method.findingsText')}</p><p>{t('method.sharpe')}</p><div className="inline-note">{t('method.synthetic')}</div></section><section className="panel method-side"><h2>{t('method.protocol')}</h2><div><small>{t('method.goal')}</small><b>{t('method.goalV')}</b></div><div><small>{t('method.val')}</small><b>{t('method.valV')}</b></div><div><small>{t('method.gap')}</small><b>{t('method.gapV')}</b></div><div><small>{t('method.regime')}</small><b>{t('method.regimeV')}</b></div><div><small>{t('method.seed')}</small><b>42</b></div><div><small>{t('method.cost')}</small><b>{t('method.costV')}</b></div></section><section className="panel capability-panel"><h2>Özellik kapsamı ve gelecek planı</h2><p className="table-note">Durumlar mevcut kod ve veri sözleşmesine göre işaretlenmiştir. “Kısmen var”, temel mekanizmanın bulunduğunu ancak üretim seviyesinde tam kapsama ulaşmadığını belirtir.</p>{capabilityTables.map(table=><div className="capability-group" key={table.title}><h3>{table.title}</h3><div className="capability-table-wrap"><table className="capability-table"><thead><tr><th>Özellik</th><th>Açıklama</th><th>Durum</th><th>Gelecek planı</th></tr></thead><tbody>{table.rows.map(row=><tr key={row.name}><td><b>{row.name}</b></td><td>{row.explanation}</td><td><span className={`cap-status ${row.status.replace(' ','-').toLowerCase()}`}>{row.status}</span></td><td>{row.plan}</td></tr>)}</tbody></table></div></div>)}<p className="table-note">{t('cap.summary')}</p></section></div>}
       <footer className="footer"><span><Activity size={13}/>REGIME LAB <i/> {t('footer.built')}</span><span>{t('footer.local')}</span></footer>
+      <ChatBot />
     </main></div>
     <dialog ref={workspaceDialogRef} onCancel={()=>setWorkspaceModal(false)} onClick={e=>{if(e.target===workspaceDialogRef.current)setWorkspaceModal(false);}}><div><div className="dialog-heading"><span className="workspace-icon">FX</span><button type="button" className="icon-button" aria-label={t('ws.close')} onClick={()=>setWorkspaceModal(false)}><X size={20}/></button></div><h2>{t('ws.switchTitle')}</h2><p className="dialog-description">{t('ws.switchDesc')}</p>{wsError&&<div className="alert" role="alert">{wsError}</div>}<div className="workspace-list">{workspaces.map(w=><div key={w.id} className={w.id===workspace?.id?'workspace-row current':'workspace-row'}><button type="button" onClick={()=>switchAndReload(w.id)} disabled={w.id===workspace?.id}><b>{w.name}</b><small>{w.code} · {w.experiment_count} {t('ws.experiments')} · {w.dataset_count} {t('ws.datasets')}{w.id===workspace?.id?` · ${t('ws.current')}`:''}</small></button>{w.code!=='WS-DEFAULT'&&<button type="button" className="text-button" onClick={()=>archiveAndRefresh(w.id)}>{t('ws.archive')}</button>}</div>)}</div><form onSubmit={e=>{e.preventDefault();createAndSwitch();}}><div className="form-grid"><label>{t('ws.newName')}<input required maxLength={120} value={newWsName} onChange={e=>setNewWsName(e.target.value)}/></label><label>{t('ws.market')}<input maxLength={16} value={newWsMarket} onChange={e=>setNewWsMarket(e.target.value)}/></label></div><button className="primary full-width" type="submit"><Plus size={16}/>{t('ws.create')}</button></form></div></dialog>
     <dialog ref={dialogRef} onCancel={()=>setModal(false)} onClick={e=>{if(e.target===dialogRef.current)setModal(false);}}><form onSubmit={e=>{e.preventDefault();run();}}><div className="dialog-heading"><span className="expert-icon"><FlaskConical size={22}/></span><button type="button" className="icon-button" aria-label={t('ws.close')} onClick={()=>setModal(false)}><X size={20}/></button></div><h2>{t('dlg.newTitle')}</h2><p className="dialog-description">{t('dlg.newDesc')}</p>{error&&<div className="alert" role="alert">{error}</div>}

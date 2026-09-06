@@ -19,10 +19,12 @@ from backend.quant.validation import PurgedKFold, rolling_splits, anchored_split
 from .models import MODEL_REGISTRY, ModelAdapter
 from .schema import ExperimentSpec
 from .families import family_for_column
+from .indicators import cached_indicators, indicator_names, rule_masks, apply_rules
 
 
-def feature_frame(df):
+def feature_frame(df, cache_dir=None):
     x = features(df)
+    x = x.join(cached_indicators(df, cache_dir))
     base_columns = list(x.columns)
     r = np.log(df.close).diff()
     window = r.rolling(30)
@@ -59,10 +61,11 @@ def registry(df=None):
     names = [f"return_{n}" for n in [0,1,2,3,6]]
     names += [f"{kind}_{w}" for w in [6,14,30,50] for kind in ["momentum","sma","volatility"]]
     names += ["range","body","macd","rsi","hour_sin","hour_cos","quantile_25","quantile_75","rolling_min","rolling_max","rolling_skew","rolling_kurtosis","rolling_iqr","signal_noise","tanh_momentum"]
+    names += indicator_names()
     def group(name):
         if name.startswith(("quantile", "rolling", "signal_noise", "tanh")): return "statistical"
-        if name.startswith("volatility") or name == "range": return "volatility"
-        if name.startswith("sma") or name == "macd": return "trend"
+        if name.startswith(("volatility", "atr_", "bb_position_")) or name == "range": return "volatility"
+        if name.startswith(("sma", "ema_")) or name == "macd": return "trend"
         return "momentum"
     items = [{"id": n, "name": n, "category": group(n), "version": "1", "lookback": 50,
               "availability": "OHLC bar kapanışından sonra", "source_columns": ["open","high","low","close"]} for n in names]
@@ -141,7 +144,7 @@ class RegimeRouter:
 
 
 def splits(n, method, train_ratio, folds, gap, purge_window=0, embargo_pct=0.01,
-           train_window=500, test_window=50, step=50):
+           train_window=500, test_window=50, step=50, validation_ratio=.15):
     """Leakage-safe partitions. Returns [(train, val, meta)] with meta holding
     ``purged_samples`` / ``embargo_samples`` for the fold artifact (Sprint 3).
 
@@ -152,7 +155,7 @@ def splits(n, method, train_ratio, folds, gap, purge_window=0, embargo_pct=0.01,
     from .schema import DomainError
     try:
         if method == "holdout":
-            a = int(n * train_ratio / (train_ratio + .15))
+            a = int(n * train_ratio / (train_ratio + validation_ratio))
             if a - gap < 1 or a >= n:
                 raise ValueError("holdout")
             return [(np.arange(a-gap), np.arange(a,n),
@@ -264,7 +267,7 @@ def merged_reality(spec):
                                                     "max_position_fraction": fraction})
 
 
-def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
+def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None, signal_masks=None):
     """This function receives no holdout/test data, index or test callback.
 
     ``router`` (a dev-fitted, causal RegimeRouter) adds validation-only regime
@@ -277,7 +280,7 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
     min_count, max_count = min(o.min_features,len(columns)), min(o.max_features,len(columns))
     v = spec.validation
     partitions = splits(len(x_dev), v.method, v.train_ratio, v.folds, v.gap,
-                        v.purge_window, v.embargo_pct, v.train_window, v.test_window, v.step)
+                        v.purge_window, v.embargo_pct, v.train_window, v.test_window, v.step, v.validation_ratio)
     reality = merged_reality(spec)
     # Sprint2: adapter GA'yı bozmaz — eski ranking default korunur.
     # feature_quality = seçili feature'ların dev-verideki mean abs(Spearman IC)'si (Sprint1 çıktısı).
@@ -339,6 +342,8 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
             emit("optimization.candidate.started", {"evaluated": len(cache), "candidate_id": key})
             model = ModelAdapter(genome["model"], params, spec.seed).fit(x_dev.iloc[train][chosen],y_dev[train])
             pred = model.predict(x_dev.iloc[val][chosen])
+            if signal_masks is not None:
+                pred = apply_rules(pred, [mask[val] for mask in signal_masks])
             stamps = x_dev.index[val]
             bars = (dev_market["high"].to_numpy()[val], dev_market["low"].to_numpy()[val]) if dev_market is not None else (None, None)
             ret, sig, _ = fx_backtest(pred,y_dev[val],reality,stamps,genome["threshold"]/10000,high=bars[0],low=bars[1])
@@ -383,7 +388,14 @@ def optimize(x_dev, y_dev, spec, annual, emit, dev_market=None, router=None):
         cache[key] = c
         return c
 
-    if o.algorithm == "none":
+    if o.algorithm in ("grid", "random"):
+        if o.algorithm == "grid":
+            genomes = [{"mask": [True]*len(columns), "model": name, "param": param, "threshold": float(threshold)}
+                       for name in spec.models for param in (range(3) if o.hyperparameters else [1]) for threshold in o.thresholds_bps]
+        else:
+            genomes = [random_genome() for _ in range(o.population*o.generations)]
+        for genome in genomes: evaluate(genome)
+    elif o.algorithm == "none":
         genomes = [{"mask": [True]*len(columns), "model": name, "param": 1, "threshold": 0.0} for name in spec.models]
         for g in genomes:
             birth_parents.setdefault(genome_key(g), [])
@@ -500,9 +512,17 @@ def _execute(df,spec,emit,artifact_dir):
         aggregations = {"open":"first","high":"max","low":"min","close":"last"}
         aggregations.update({column:"last" for column in df.columns if column not in aggregations})
         df = df.resample(spec.timeframe).agg(aggregations).dropna(subset=["open","high","low","close"])
-    x = feature_frame(df)
+    # Keep pre-start observations for indicator warm-up; trim the end before
+    # creating next-open targets so no execution extends beyond the end date.
+    if spec.period.end:
+        df = df.loc[df.index < pd.Timestamp(spec.period.end, tz="UTC") + pd.Timedelta(days=1)]
+    x = feature_frame(df, artifact_dir.parent.parent / 'feature_cache')
     target = (df.open.shift(-2)/df.open.shift(-1)-1).reindex(x.index)
     x,target = x.loc[target.notna()],target.dropna()
+    if spec.period.start:
+        x = x.loc[x.index >= pd.Timestamp(spec.period.start, tz="UTC")]
+        target = target.reindex(x.index)
+    all_features = x.copy()
     regime_frame = x[["return_0", "volatility_14", "momentum_30"]].copy()
     # Target conversion is deferred until selected external features have had
     # their release-time gaps removed.
@@ -514,11 +534,14 @@ def _execute(df,spec,emit,artifact_dir):
     # durably so missingness is measured, not assumed.
     missingness = {c: float(x[c].isna().mean()) for c in selected}
     x = x[selected].dropna()
+    masks = rule_masks(all_features.reindex(x.index), spec.signal_rules)
     regime_frame = regime_frame.reindex(x.index)
     target = target.reindex(x.index)
     y = target.to_numpy()
     if not np.isfinite(y).all() or (np.abs(y)>=1).any(): raise ValueError("Hedef getiriler geçersiz veya tek barda %100 üzerinde.")
-    b = int(len(x)*(spec.validation.train_ratio+.15))
+    b = int(len(x)*(spec.validation.train_ratio+spec.validation.validation_ratio))
+    if spec.period.test_start:
+        b = int(x.index.searchsorted(pd.Timestamp(spec.period.test_start, tz="UTC")))
     dev_end = b-spec.validation.gap
     if dev_end<160 or len(x)-b<40: raise ValueError("Dönüşümden sonra yeterli eğitim/test barı yok (en az 160/40).")
     x_dev,y_dev = x.iloc[:dev_end].copy(),y[:dev_end].copy()
@@ -534,7 +557,7 @@ def _execute(df,spec,emit,artifact_dir):
     emit("stage",{"status":"TRAINING","progress":15,"message":"Model havuzu ve zaman bölümleri hazırlanıyor"})
     emit("stage",{"status":"OPTIMIZING","progress":20,"message":"Adaylar yalnızca geliştirme verisinde değerlendiriliyor"})
     dev_market = df[["high", "low"]].reindex(x_dev.index)
-    optimization = optimize(x_dev,y_dev,spec,annual,emit,dev_market,router)
+    optimization = optimize(x_dev,y_dev,spec,annual,emit,dev_market,router,[mask[:dev_end] for mask in masks])
     best = optimization["best"]
     emit("stage",{"status":"VALIDATING","progress":70,"message":"Seçilen aday sabitleniyor"})
     freeze = {"candidate":best,"development_end":x_dev.index[-1].isoformat(),"test_start":x.index[b].isoformat(),"seed":spec.seed}
@@ -544,6 +567,7 @@ def _execute(df,spec,emit,artifact_dir):
     emit("candidate.frozen",{"id":best["id"],"features":best["features"],"test_access":"CLOSED_UNTIL_FREEZE"})
     emit("stage",{"status":"TESTING","progress":80,"message":"Sabit aday için tek final test ölçümü"})
     forecast = model.predict(x.iloc[b:][best["features"]])
+    forecast = apply_rules(forecast, [mask[b:] for mask in masks])
     reality = merged_reality(spec)
     test_bars = (df["high"].reindex(x.index[b:]).to_numpy(), df["low"].reindex(x.index[b:]).to_numpy())
     ret,signal,execution = fx_backtest(forecast,y[b:],reality,x.index[b:],best["threshold_bps"]/10000,high=test_bars[0],low=test_bars[1])
@@ -554,8 +578,8 @@ def _execute(df,spec,emit,artifact_dir):
     peak = np.maximum.accumulate(np.r_[spec.backtest.capital,equity])[1:]
     baseline = spec.backtest.capital*np.cumprod(1+benchmark)
     timestamps = pd.Series(df.index,index=df.index).shift(-2).reindex(x.index[b:])
-    forecast_scale=max(float(np.std(forecast[:b])),1e-12)
-    confidence=np.clip(np.abs(forecast[b:])/(3.0*forecast_scale),0.0,1.0)
+    forecast_scale=max(float(np.std(forecast)),1e-12)
+    confidence=np.clip(np.abs(forecast)/(3.0*forecast_scale),0.0,1.0)
     curve = [{"timestamp":t.isoformat(),"signal_timestamp":x.index[b+i].isoformat(),"equity":float(equity[i]),"benchmark":float(baseline[i]),
               "drawdown":float(equity[i]/peak[i]-1),"return":float(ret[i]),"signal":int(signal[i]),"prediction_bps":float(forecast[i]*10000),
               "confidence":float(confidence[i]),"close":float(df.loc[x.index[b+i],"close"])} for i,t in enumerate(timestamps)]

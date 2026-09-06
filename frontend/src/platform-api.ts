@@ -11,9 +11,14 @@ export const token=()=>{
 export const lang=()=>{try{const v=localStorage.getItem('regimelab.lang');return v==='en'?'en':'tr';}catch{return 'tr';}};
 export const workspaceId=()=>getStoredWorkspaceId()||'';
 export const headers=()=>({'Content-Type':'application/json','X-RegimeLab-Source':'WEB','Accept-Language':lang(),...(workspaceId()?{'X-Workspace-Id':workspaceId()}:{}),...(token()?{Authorization:`Bearer ${token()}`}:{})});
+async function responseValue(response:Response):Promise<any>{
+  const text=await response.text();
+  if(!text)return {};
+  try{return JSON.parse(text);}catch{return {detail:text};}
+}
 export async function request<T>(path:string,method='GET',body?:unknown,extra?:Record<string,string>):Promise<T>{
   const response=await fetch(`/api/v1${path}`,{method,headers:{...headers(),...extra},body:body===undefined?undefined:JSON.stringify(body)});
-  const value=await response.json();
+  const value=await responseValue(response);
   if(!response.ok)throw new Error(typeof value.detail==='string'?value.detail:value.error?.message||JSON.stringify(value.detail||value));
   return value;
 }
@@ -26,7 +31,7 @@ export async function download(path:string,name:string){
 export type QuantEnvelope<T>={success:boolean;experiment_id:string|null;data:T|null;error:string|null};
 export async function requestQuant<T>(path:string,method='GET',body?:unknown):Promise<T>{
   const response=await fetch(`/api${path}`,{method,headers:headers(),body:body===undefined?undefined:JSON.stringify(body)});
-  const value=await response.json() as QuantEnvelope<T>;
+  const value=await responseValue(response) as QuantEnvelope<T>;
   if(!response.ok||!value.success)throw new Error(value.error||'Quant isteği başarısız.');
   return value.data as T;
 }
@@ -40,7 +45,8 @@ export type QuantStress={scenarios:QuantStressRow[];sharpe_matrix:Record<string,
 export type QuantCalibration={calibrated_probability:number[];brier_raw:number;log_loss_raw:number;brier_calibrated?:number;log_loss_calibrated?:number;curve_raw:{prob_true:number[];prob_pred:number[]};curve_calibrated?:{prob_true:number[];prob_pred:number[]}};
 export type QuantFitness={fitness:number;breakdown:{sharpe_contribution:number;feature_quality_contribution:number;drawdown_penalty:number;turnover_penalty:number}};
 export type QuantQuantile={quantiles:number[];predictions:Record<string,number>[]};
-export type Spec={schema_version:'1.0';name:string;description:string;tags:string[];market:'FX';symbol:'EURUSD';dataset_id:string;timeframe:string;features:{groups:string[];families:string[];names:string[]};models:string[];optimization:{algorithm:string;population:number;generations:number;mutation_rate:number;crossover_rate:number;elitism:number;min_features:number;max_features:number;hyperparameters:boolean;objective:string;max_drawdown:number;min_trades:number;max_exposure:number|null;max_worst_regime_drawdown:number|null;thresholds_bps?:number[]};validation:{method:string;train_ratio:number;folds:number;gap:number;locked_test:true;purge_window:number;embargo_pct:number;train_window:number;test_window:number;step:number};backtest:{capital:number;cost_bps:number;slippage_bps:number};seed:number;regime_states:number;search_space_id?:string|null};
+export type SignalRule={feature:string;operator:'gt'|'lt'|'cross_above'|'cross_below';value:number};
+export type Spec={schema_version:'1.0';name:string;description:string;tags:string[];market:'FX';symbol:'EURUSD';dataset_id:string;timeframe:string;features:{groups:string[];families:string[];names:string[]};models:string[];optimization:{algorithm:string;population:number;generations:number;mutation_rate:number;crossover_rate:number;elitism:number;min_features:number;max_features:number;hyperparameters:boolean;objective:string;max_drawdown:number;min_trades:number;max_exposure:number|null;max_worst_regime_drawdown:number|null;thresholds_bps?:number[]};validation:{method:string;train_ratio:number;validation_ratio?:number;folds:number;gap:number;locked_test:true;purge_window:number;embargo_pct:number;train_window:number;test_window:number;step:number};backtest:{capital:number;cost_bps:number;slippage_bps:number};seed:number;regime_states:number;period?:{start:string|null;end:string|null;test_start:string|null};signal_rules?:{long:SignalRule[];short:SignalRule[]};search_space_id?:string|null};
 export const defaultSpec:Spec={schema_version:'1.0',name:'EURUSD araştırması',description:'',tags:[],market:'FX',symbol:'EURUSD',dataset_id:'demo',timeframe:'native',features:{groups:['technical'],families:[],names:[]},models:['ridge','xgboost'],optimization:{algorithm:'genetic',population:8,generations:4,mutation_rate:.12,crossover_rate:.8,elitism:2,min_features:3,max_features:30,hyperparameters:true,objective:'sharpe',max_drawdown:.5,min_trades:0,max_exposure:null,max_worst_regime_drawdown:null},validation:{method:'walk_forward',train_ratio:.65,folds:3,gap:2,locked_test:true,purge_window:5,embargo_pct:.01,train_window:500,test_window:50,step:50},backtest:{capital:10000,cost_bps:.5,slippage_bps:.2},seed:42,regime_states:3,search_space_id:null};
 export type SearchSpaceDef={name:string;description:string;feature_groups:string[];features:string[];min_features:number;max_features:number;models:string[];hyperparameters:boolean;thresholds_bps:number[];regime_states:number;max_drawdown:number};
 export type SearchSpace={id:string;name:string;version:number;definition:SearchSpaceDef;owner:string;created_at:string;archived_at:string|null;workspace_id:string|null};

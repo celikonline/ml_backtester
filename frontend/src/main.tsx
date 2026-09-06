@@ -6,4 +6,5 @@ import { AuthProvider } from './auth';
 import { WorkspaceProvider } from './workspace';
 import './app/styles/style.css';
 import './app/styles/auth.css';
+import './app/styles/status.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><LanguageProvider><AuthProvider><WorkspaceProvider><App/></WorkspaceProvider></AuthProvider></LanguageProvider></React.StrictMode>);

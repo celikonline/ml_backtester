@@ -1,4 +1,5 @@
 from typing import Literal
+from datetime import date
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -13,7 +14,7 @@ class FeatureSpec(Contract):
 
 
 class OptimizationSpec(Contract):
-    algorithm: Literal["none", "genetic"] = "none"
+    algorithm: Literal["none", "genetic", "random", "grid"] = "none"
     population: int = Field(8, ge=4, le=32)
     generations: int = Field(4, ge=1, le=20)
     mutation_rate: float = Field(.12, ge=0, le=1)
@@ -62,6 +63,7 @@ class SearchSpaceDefinition(Contract):
 class ValidationSpec(Contract):
     method: Literal["holdout", "walk_forward", "purged_kfold", "rolling", "anchored"] = "walk_forward"
     train_ratio: float = Field(.65, ge=.50, le=.75)
+    validation_ratio: float = Field(.15, ge=.05, le=.40)
     folds: int = Field(3, ge=2, le=5)
     gap: int = Field(2, ge=2, le=30)
     locked_test: Literal[True] = True
@@ -71,6 +73,12 @@ class ValidationSpec(Contract):
     train_window: int = Field(500, ge=10, le=50000)
     test_window: int = Field(50, ge=5, le=10000)
     step: int = Field(50, ge=1, le=10000)
+
+    @model_validator(mode="after")
+    def ratios(self):
+        if self.train_ratio + self.validation_ratio > .95:
+            raise ValueError("Final test için en az %5 veri ayırın.")
+        return self
 
 
 class BacktestRealityConfig(Contract):
@@ -102,6 +110,33 @@ class BacktestSpec(Contract):
     reality: BacktestRealityConfig = Field(default_factory=BacktestRealityConfig)
 
 
+class PeriodSpec(Contract):
+    start: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    test_start: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @model_validator(mode="after")
+    def ordered(self):
+        for value in (self.start, self.end, self.test_start):
+            if value: date.fromisoformat(value)
+        if self.start and self.end and self.start >= self.end:
+            raise ValueError("Başlangıç tarihi bitişten önce olmalı.")
+        if self.test_start and ((self.start and self.test_start <= self.start) or (self.end and self.test_start >= self.end)):
+            raise ValueError("Test başlangıcı seçili veri aralığının içinde olmalı.")
+        return self
+
+
+class SignalRule(Contract):
+    feature: str = Field(min_length=1, max_length=100)
+    operator: Literal["gt", "lt", "cross_above", "cross_below"] = "gt"
+    value: float = 0
+
+
+class SignalRules(Contract):
+    long: list[SignalRule] = Field(default_factory=list, max_length=10)
+    short: list[SignalRule] = Field(default_factory=list, max_length=10)
+
+
 class ExperimentSpec(Contract):
     schema_version: Literal["1.0"] = "1.0"
     name: str = Field("EURUSD araştırması", min_length=1, max_length=120)
@@ -120,6 +155,8 @@ class ExperimentSpec(Contract):
     seed: int = Field(42, ge=0, le=2147483647)
     regime_states: int = Field(3, ge=2, le=5)
     search_space_id: str | None = Field(None, max_length=36)
+    period: 'PeriodSpec' = Field(default_factory=lambda: PeriodSpec())
+    signal_rules: 'SignalRules' = Field(default_factory=lambda: SignalRules())
 
     @model_validator(mode="after")
     def distinct(self):
@@ -171,8 +208,15 @@ RESEARCH_BUDGET = {"max_experiments": 50, "max_candidates": 2000, "max_backtests
                    "max_sealed_test_accesses": 1, "risk_reject_at": 0.90}
 
 
+def candidate_count(spec):
+    o = spec.optimization
+    if o.algorithm == "none": return len(spec.models)
+    if o.algorithm == "grid": return len(spec.models) * (3 if o.hyperparameters else 1) * len(o.thresholds_bps)
+    return o.population * o.generations
+
+
 def check_policy(spec, rows):
-    count = spec.optimization.population * spec.optimization.generations if spec.optimization.algorithm == "genetic" else len(spec.models)
+    count = candidate_count(spec)
     if count > POLICY["max_candidates"] or rows > POLICY["max_rows"]:
         raise DomainError(f"Hesaplama sınırı: en fazla {POLICY['max_candidates']} aday ve {POLICY['max_rows']} bar. İstenen: {count} aday, {rows} bar.", 422, "policy_rejected")
     from .research import count_splits

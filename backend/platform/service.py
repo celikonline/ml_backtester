@@ -431,6 +431,8 @@ class ExperimentService:
         from .research import registry
         names = {f["id"] for f in registry(self.load_snapshot(snapshot["id"]))}
         if not set(spec.features.names)<=names: raise DomainError("Bilinmeyen özellik adı.",422,"invalid_feature")
+        if any(rule.feature not in names for rule in spec.signal_rules.long + spec.signal_rules.short):
+            raise DomainError("Kural indikatörü bu veri setinde bulunamadı.",422,"invalid_feature")
         identifier = uid()
         record = {"id":identifier,"code":f"EXP-{datetime.now().year}-{identifier[:8].upper()}","parent_id":parent_id,"snapshot_id":snapshot["id"],"workspace_id":ws["id"],
                   "name":spec.name,"status":"DRAFT","specification":spec.model_dump(),"owner":actor.get("id","local-user"),"created_at":now(),"updated_at":now()}

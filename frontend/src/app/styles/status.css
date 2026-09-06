@@ -1,0 +1,22 @@
+/* Semantic status colors: failed runs must be visually unambiguous. */
+.badge.status-failed,
+.badge.hist-status-failed {
+  color: #ff6b6b;
+  background: #ff4d4d14;
+  border-color: #ff6b6b66;
+}
+
+/* The active run log has no status class, so derive the failed state from its
+   existing error message without changing the component markup. */
+.log-panel:has(.logs .negative) .log-title > .badge {
+  color: #ff6b6b;
+  background: #ff4d4d14;
+  border-color: #ff6b6b66;
+}
+
+:root[data-theme='light'] .badge.status-failed,
+:root[data-theme='light'] .badge.hist-status-failed {
+  color: #c53030;
+  background: #fff5f5;
+  border-color: #feb2b2;
+}
