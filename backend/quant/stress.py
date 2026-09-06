@@ -96,10 +96,10 @@ def experiment_stress_report(predictions, actuals, timestamps, base_reality: dic
     Donus JSON-serializable'dir ve stress_test_report.json artifact'idir.
     """
     preds = np.asarray(predictions, dtype=float)
-    slip = slippage_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low)
-    lat = latency_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low)
-    scen = systematic_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low)
-    matrix = cost_stress_matrix(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low)
+    slip = slippage_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low, threshold=threshold)
+    lat = latency_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low, threshold=threshold)
+    scen = systematic_stress(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low, threshold=threshold)
+    matrix = cost_stress_matrix(preds, actuals, timestamps, dict(base_reality), backtest_fn, high=high, low=low, threshold=threshold)
     scenarios = scen.to_dict("records")
     base = next((r for r in scenarios if r["scenario"] == "Normal"), scenarios[0] if scenarios else {})
     worst = min(scenarios, key=lambda r: r["sharpe"]) if scenarios else {}
@@ -145,11 +145,12 @@ def systematic_stress(predictions, actuals, timestamps, base_reality: dict,
                 m = _run(run_preds[mask], np.asarray(actuals)[mask],
                          np.asarray(timestamps)[mask], reality, backtest_fn,
                          high=np.asarray(high)[mask] if high is not None else None,
-                         low=np.asarray(low)[mask] if low is not None else None)
+                         low=np.asarray(low)[mask] if low is not None else None,
+                         threshold=threshold)
                 rows.append({"scenario": name, **m})
                 continue
         elif name == "Low Liquidity Proxy":
             reality["slippage_bps"] = float(reality.get("slippage_bps", 0)) * 3 + 2
-        m = _run(run_preds, actuals, timestamps, reality, backtest_fn, high, low)
+        m = _run(run_preds, actuals, timestamps, reality, backtest_fn, high, low, threshold)
         rows.append({"scenario": name, **m})
     return pd.DataFrame(rows)
