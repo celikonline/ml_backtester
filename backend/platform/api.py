@@ -322,6 +322,10 @@ def router(dataset_loader, datasets_list):
         r=s.result(identifier)
         return {"metrics":r["metrics"],"cost_sensitivity":r["cost_sensitivity"],"curve":r["curve"]}
 
+    @api.get("/experiments/{identifier}/stress")
+    def stress(identifier:str,s=Depends(service)):
+        return s.stress_report(identifier)
+
     @api.get("/experiments/{identifier}/regimes")
     def regimes(identifier:str,s=Depends(service)):
         r=s.result(identifier)
