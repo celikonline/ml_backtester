@@ -160,13 +160,28 @@ test_artifact_created
 # 11. Definition of Done
 
 ```text
-[ ] Slippage stress çalışıyor
-[ ] Latency stress çalışıyor
-[ ] Commission stress çalışıyor
-[ ] Cost matrix oluşuyor
-[ ] Worst-case summary oluşuyor
-[ ] Backtest engine kopyalanmadı
-[ ] API çalışıyor
-[ ] Artifact kaydediliyor
-[ ] Testler geçiyor
+[x] Slippage stress çalışıyor
+[x] Latency stress çalışıyor
+[x] Commission stress çalışıyor
+[x] Cost matrix oluşuyor
+[x] Worst-case summary oluşuyor
+[x] Backtest engine kopyalanmadı
+[x] API çalışıyor
+[x] Artifact kaydediliyor
+[x] Testler geçiyor
 ```
+
+## Uygulama notları (2026-09)
+
+- Motor ortak: `backend/quant/stress.py` tüm senaryolarda aynı `fx_backtest`
+  motorunu farklı parametrelerle çağırır (kopya yok). Ham API'ler
+  `backend/platform/quant_api.py` altındaydı; bu sprintte deney hattına bağlandı.
+- `execute_research` her tamamlanan teste `stress_inputs` gömer
+  (tahmin/gerçek/zaman + high/low + eşik). Eski `result.json` dosyalarında bu
+  alan yoktur → rapor ucu 409 ile klon+yeniden çalıştırma önerir.
+- `GET /api/v1/experiments/{id}/stress` → `ExperimentService.stress_report()`:
+  slippage/latency/senaryo/cost-matrix/worst-case/robustness tek raporda,
+  `stress_test_report.json` artifact olarak run klasörüne yazılır
+  (artifacts listesine eklendi).
+- Robustness skoru **sadece raporlama** içindir, GA fitness'a bağlı değildir.
+- Testler: `tests/test_stress_sprint4.py` (7) + `tests/test_quant_stress.py` (3).
