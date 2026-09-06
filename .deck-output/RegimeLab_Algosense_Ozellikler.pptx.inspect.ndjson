@@ -1,0 +1,89 @@
+{"kind":"deck","id":"pr/ex0do3","name":"Deck"}
+{"kind":"layout","layoutId":"e0898f81-0a8f-4dce-beaa-6ced5fbc1ba0","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"af79468d-e4c6-4110-b681-ab9c8e5d11cc","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/7z1dzd","slide":1,"title":"REGIMELAB × ALGOSENSE","textShapes":7}
+{"kind":"textbox","id":"sh/gfmxszi9","slide":1,"text":"REGIMELAB × ALGOSENSE","textPreview":"REGIMELAB × ALGOSENSE","textChars":21,"textLines":1,"bbox":[60,35,500,20]}
+{"kind":"textbox","id":"sh/fedwzu1o","slide":1,"text":"Algoritmik araştırma altyapısı","textPreview":"Algoritmik araştırma altyapısı","textChars":30,"textLines":1,"bbox":[60,67,1160,54]}
+{"kind":"textbox","id":"sh/ud4vqp0j","slide":1,"text":"RegimeLab  |  Eylül 2026","textPreview":"RegimeLab  |  Eylül 2026","textChars":24,"textLines":1,"bbox":[60,682,400,16]}
+{"kind":"textbox","id":"sh/p4fep4j6","slide":1,"text":"Program özellikleri, mevcut kapsam ve gelecek planı","textPreview":"Program özellikleri, mevcut kapsam ve gelecek planı","textChars":51,"textLines":1,"bbox":[60,155,690,42]}
+{"kind":"textbox","id":"sh/4j6xwzil","slide":1,"text":"Veriden modele, rejimden doğrulanmış backteste","textPreview":"Veriden modele, rejimden doğrulanmış backteste","textChars":46,"textLines":1,"bbox":[60,250,650,70]}
+{"kind":"textbox","id":"sh/3ixwnu10","slide":1,"text":"Koyu zemin · neon yeşil vurgu · düşük gecikme ve veri güveni odağı","textPreview":"Koyu zemin · neon yeşil vurgu · düşük gecikme ve veri güveni odağı","textChars":66,"textLines":1,"bbox":[60,350,650,24]}
+{"kind":"textbox","id":"sh/2hofup0f","slide":1,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[1060,580,120,70]}
+{"kind":"notes","id":"nt/7z1dzd","slide":1,"text":"Kaynak: RegimeLab proje kodu, README ve Algosense ana sayfasının görsel/iletişim yaklaşımı. https://algosense.com.tr/"}
+{"kind":"slide","id":"sl/8vv4zn","slide":2,"title":"REGIMELAB","textShapes":26}
+{"kind":"textbox","id":"sh/udwje1sz","slide":2,"text":"REGIMELAB","textPreview":"REGIMELAB","textChars":9,"textLines":1,"bbox":[60,35,500,20]}
+{"kind":"textbox","id":"sh/hg7i9gbq","slide":2,"text":"Platformun çalışma modeli","textPreview":"Platformun çalışma modeli","textChars":25,"textLines":1,"bbox":[60,67,1160,54]}
+{"kind":"textbox","id":"sh/gfy1gba5","slide":2,"text":"RegimeLab  |  Eylül 2026","textPreview":"RegimeLab  |  Eylül 2026","textChars":24,"textLines":1,"bbox":[60,682,400,16]}
+{"kind":"textbox","id":"sh/32p0b6tw","slide":2,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[60,170,40,24]}
+{"kind":"textbox","id":"sh/ihgji1sb","slide":2,"text":"Piyasa verisi","textPreview":"Piyasa verisi","textChars":13,"textLines":1,"bbox":[60,207,135,36]}
+{"kind":"textbox","id":"sh/547idgbm","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[200,207,22,30]}
+{"kind":"textbox","id":"sh/43y1kba1","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[226,170,40,24]}
+{"kind":"textbox","id":"sh/z6l0zmtc","slide":2,"text":"PIT kontrolü","textPreview":"PIT kontrolü","textChars":12,"textLines":1,"bbox":[226,207,135,36]}
+{"kind":"textbox","id":"sh/ylcz6hcr","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[366,207,22,30]}
+{"kind":"textbox","id":"sh/gvq5c769","slide":2,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[392,170,40,24]}
+{"kind":"textbox","id":"sh/hwjmlc7u","slide":2,"text":"Feature üretimi","textPreview":"Feature üretimi","textChars":15,"textLines":1,"bbox":[392,207,135,36]}
+{"kind":"textbox","id":"sh/ut8naxo3","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[532,207,22,30]}
+{"kind":"textbox","id":"sh/vuh4j2po","slide":2,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[558,170,40,24]}
+{"kind":"textbox","id":"sh/4za5g765","slide":2,"text":"Rejim analizi","textPreview":"Rejim analizi","textChars":13,"textLines":1,"bbox":[558,207,135,36]}
+{"kind":"textbox","id":"sh/p0jmpc7q","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[698,207,22,30]}
+{"kind":"textbox","id":"sh/2xsnehoz","slide":2,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[724,170,40,24]}
+{"kind":"textbox","id":"sh/3y14nmpk","slide":2,"text":"Model havuzu","textPreview":"Model havuzu","textChars":12,"textLines":1,"bbox":[724,207,135,36]}
+{"kind":"textbox","id":"sh/k36lknq1","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[864,207,22,30]}
+{"kind":"textbox","id":"sh/l4zmds7m","slide":2,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[890,170,40,24]}
+{"kind":"textbox","id":"sh/1o7u1kvy","slide":2,"text":"Walk-forward","textPreview":"Walk-forward","textChars":12,"textLines":1,"bbox":[890,207,135,36]}
+{"kind":"textbox","id":"sh/0nytsfed","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[1030,207,22,30]}
+{"kind":"textbox","id":"sh/zm5czad8","slide":2,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1056,170,40,24]}
+{"kind":"textbox","id":"sh/elwbq5wn","slide":2,"text":"Final holdout","textPreview":"Final holdout","textChars":13,"textLines":1,"bbox":[1056,207,135,36]}
+{"kind":"textbox","id":"sh/9c7u5kva","slide":2,"text":"Temel omurga","textPreview":"Temel omurga","textChars":12,"textLines":1,"bbox":[60,330,240,22]}
+{"kind":"textbox","id":"sh/obytwzep","slide":2,"text":"CSV veri sözleşmesi · snapshot + SHA-256 · Gaussian HMM · GA ile aday seçimi · maliyet duyarlı backtest · deney geçmişi","textPreview":"CSV veri sözleşmesi · snapshot + SHA-256 · Gaussian HMM · GA ile aday seçimi · maliyet duyarlı backtest · deney geçmişi","textChars":119,"textLines":1,"bbox":[60,365,1030,70]}
+{"kind":"textbox","id":"sh/nqpc3ud4","slide":2,"text":"Amaç: araştırma kararlarını izlenebilir, kronolojik ve tekrarlanabilir hale getirmek.","textPreview":"Amaç: araştırma kararlarını izlenebilir, kronolojik ve tekrarlanabilir hale getirmek.","textChars":85,"textLines":1,"bbox":[60,500,950,30]}
+{"kind":"notes","id":"nt/8vv4zn","slide":2,"text":"Kaynak: RegimeLab proje kodu, README ve Algosense ana sayfasının görsel/iletişim yaklaşımı. https://algosense.com.tr/"}
+{"kind":"slide","id":"sl/zgw1v9","slide":3,"title":"REGIMELAB","textShapes":3}
+{"kind":"textbox","id":"sh/sbixo7yt","slide":3,"text":"REGIMELAB","textPreview":"REGIMELAB","textChars":9,"textLines":1,"bbox":[60,35,500,20]}
+{"kind":"textbox","id":"sh/ra9gf2x8","slide":3,"text":"Data engineering ve FX / makro kapsamı","textPreview":"Data engineering ve FX / makro kapsamı","textChars":38,"textLines":1,"bbox":[60,67,1160,54]}
+{"kind":"textbox","id":"sh/q9gfmxg3","slide":3,"text":"RegimeLab  |  Eylül 2026","textPreview":"RegimeLab  |  Eylül 2026","textChars":24,"textLines":1,"bbox":[60,682,400,16]}
+{"kind":"table","id":"tb/gby1436l","slide":3,"name":"","rows":7,"cols":4,"preview":"Özellik | Ne sağlar? | Durum | Gelecek planı","bbox":[60,145,1160,430]}
+{"kind":"notes","id":"nt/zgw1v9","slide":3,"text":"Kaynak: RegimeLab proje kodu, README ve Algosense ana sayfasının görsel/iletişim yaklaşımı. https://algosense.com.tr/"}
+{"kind":"slide","id":"sl/469wcy","slide":4,"title":"REGIMELAB","textShapes":3}
+{"kind":"textbox","id":"sh/kjmp0nep","slide":4,"text":"REGIMELAB","textPreview":"REGIMELAB","textChars":9,"textLines":1,"bbox":[60,35,500,20]}
+{"kind":"textbox","id":"sh/jidorix4","slide":4,"text":"Feature engineering ve stability","textPreview":"Feature engineering ve stability","textChars":32,"textLines":1,"bbox":[60,67,1160,54]}
+{"kind":"textbox","id":"sh/ix47ydwj","slide":4,"text":"RegimeLab  |  Eylül 2026","textPreview":"RegimeLab  |  Eylül 2026","textChars":24,"textLines":1,"bbox":[60,682,400,16]}
+{"kind":"table","id":"tb/07qlkv21","slide":4,"name":"","rows":8,"cols":4,"preview":"Özellik | Ne sağlar? | Durum | Gelecek planı","bbox":[60,145,1160,445]}
+{"kind":"notes","id":"nt/469wcy","slide":4,"text":"Kaynak: RegimeLab proje kodu, README ve Algosense ana sayfasının görsel/iletişim yaklaşımı. https://algosense.com.tr/"}
+{"kind":"slide","id":"sl/59osl5","slide":5,"title":"REGIMELAB","textShapes":3}
+{"kind":"textbox","id":"sh/nidkfe5s","slide":5,"text":"REGIMELAB","textPreview":"REGIMELAB","textChars":9,"textLines":1,"bbox":[60,35,500,20]}
+{"kind":"textbox","id":"sh/ojmlojmx","slide":5,"text":"Modelleme ve olasılıksal tahmin","textPreview":"Modelleme ve olasılıksal tahmin","textChars":31,"textLines":1,"bbox":[60,67,1160,54]}
+{"kind":"textbox","id":"sh/9kv2honi","slide":5,"text":"RegimeLab  |  Eylül 2026","textPreview":"RegimeLab  |  Eylül 2026","textChars":24,"textLines":1,"bbox":[60,682,400,16]}
+{"kind":"table","id":"tb/ridgry58","slide":5,"name":"","rows":8,"cols":4,"preview":"Özellik | Ne sağlar? | Durum | Gelecek planı","bbox":[60,145,1160,445]}
+{"kind":"notes","id":"nt/59osl5","slide":5,"text":"Kaynak: RegimeLab proje kodu, README ve Algosense ana sayfasının görsel/iletişim yaklaşımı. https://algosense.com.tr/"}
+{"kind":"slide","id":"sl/s6o8nf","slide":6,"title":"REGIMELAB","textShapes":3}
+{"kind":"textbox","id":"sh/cryxcb2d","slide":6,"text":"REGIMELAB","textPreview":"REGIMELAB","textChars":9,"textLines":1,"bbox":[60,35,500,20]}
+{"kind":"textbox","id":"sh/bqpgjqls","slide":6,"text":"Validasyon, backtest ve yönetişim","textPreview":"Validasyon, backtest ve yönetişim","textChars":33,"textLines":1,"bbox":[60,67,1160,54]}
+{"kind":"textbox","id":"sh/apgfalk7","slide":6,"text":"RegimeLab  |  Eylül 2026","textPreview":"RegimeLab  |  Eylül 2026","textChars":24,"textLines":1,"bbox":[60,682,400,16]}
+{"kind":"table","id":"tb/8bqx4jy1","slide":6,"name":"","rows":8,"cols":4,"preview":"Özellik | Ne sağlar? | Durum | Gelecek planı","bbox":[60,145,1160,445]}
+{"kind":"notes","id":"nt/s6o8nf","slide":6,"text":"Kaynak: RegimeLab proje kodu, README ve Algosense ana sayfasının görsel/iletişim yaklaşımı. https://algosense.com.tr/"}
+{"kind":"slide","id":"sl/4nj0xp","slide":7,"title":"REGIMELAB","textShapes":23}
+{"kind":"textbox","id":"sh/upwbelgb","slide":7,"text":"REGIMELAB","textPreview":"REGIMELAB","textChars":9,"textLines":1,"bbox":[60,35,500,20]}
+{"kind":"textbox","id":"sh/hcnu90zm","slide":7,"text":"Gelecek planı: veri güveninden üretim olasılıksallığına","textPreview":"Gelecek planı: veri güveninden üretim olasılıksallığına","textChars":55,"textLines":1,"bbox":[60,67,1160,54]}
+{"kind":"textbox","id":"sh/gbetgvy1","slide":7,"text":"RegimeLab  |  Eylül 2026","textPreview":"RegimeLab  |  Eylül 2026","textChars":24,"textLines":1,"bbox":[60,682,400,16]}
+{"kind":"textbox","id":"sh/7mlc36hk","slide":7,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[65,145,45,28]}
+{"kind":"textbox","id":"sh/6lcbalgz","slide":7,"text":"Veri temeli","textPreview":"Veri temeli","textChars":11,"textLines":1,"bbox":[135,145,250,28]}
+{"kind":"textbox","id":"sh/tonu5gzq","slide":7,"text":"ALFRED vintage, release timestamp, timezone/DST ve missing-data provenance","textPreview":"ALFRED vintage, release timestamp, timezone/DST ve missing-data provenance","textChars":74,"textLines":1,"bbox":[400,145,700,34]}
+{"kind":"textbox","id":"sh/8netcby5","slide":7,"text":"│","textPreview":"│","textChars":1,"textLines":1,"bbox":[80,180,15,38]}
+{"kind":"textbox","id":"sh/ripcfaho","slide":7,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[65,233,45,28]}
+{"kind":"textbox","id":"sh/qhgvm5gj","slide":7,"text":"Finansal veri","textPreview":"Finansal veri","textChars":13,"textLines":1,"bbox":[135,233,250,28]}
+{"kind":"textbox","id":"sh/g7q1k3ut","slide":7,"text":"FX option IV, forward/swap, OIS, basis, CFTC ve order flow","textPreview":"FX option IV, forward/swap, OIS, basis, CFTC ve order flow","textChars":58,"textLines":1,"bbox":[400,233,700,34]}
+{"kind":"textbox","id":"sh/h8zit8by","slide":7,"text":"│","textPreview":"│","textChars":1,"textLines":1,"bbox":[80,268,15,38]}
+{"kind":"textbox","id":"sh/ulojitcn","slide":7,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[65,321,45,28]}
+{"kind":"textbox","id":"sh/f6x0ryt8","slide":7,"text":"Feature zekâsı","textPreview":"Feature zekâsı","textChars":14,"textLines":1,"bbox":[135,321,250,28]}
+{"kind":"textbox","id":"sh/sj61g3uh","slide":7,"text":"IC decay, stability selection, drift, structural break, SHAP ve ablation","textPreview":"IC decay, stability selection, drift, structural break, SHAP ve ablation","textChars":72,"textLines":1,"bbox":[400,321,700,34]}
+{"kind":"textbox","id":"sh/tkfip8b2","slide":7,"text":"│","textPreview":"│","textChars":1,"textLines":1,"bbox":[80,356,15,38]}
+{"kind":"textbox","id":"sh/6hojetcb","slide":7,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[65,409,45,28]}
+{"kind":"textbox","id":"sh/7ix0nytw","slide":7,"text":"İleri validasyon","textPreview":"İleri validasyon","textChars":16,"textLines":1,"bbox":[135,409,250,28]}
+{"kind":"textbox","id":"sh/kfm1cjul","slide":7,"text":"Purged K-Fold, embargo, CPCV, rolling retraining ve nested selection","textPreview":"Purged K-Fold, embargo, CPCV, rolling retraining ve nested selection","textChars":68,"textLines":1,"bbox":[400,409,700,34]}
+{"kind":"textbox","id":"sh/lgfilob6","slide":7,"text":"│","textPreview":"│","textChars":1,"textLines":1,"bbox":[80,444,15,38]}
+{"kind":"textbox","id":"sh/lc7y9k3u","slide":7,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[65,497,45,28]}
+{"kind":"textbox","id":"sh/0behgfm9","slide":7,"text":"Tahmin katmanı","textPreview":"Tahmin katmanı","textChars":14,"textLines":1,"bbox":[135,497,250,28]}
+{"kind":"textbox","id":"sh/za5g7a5o","slide":7,"text":"Calibration, conformal, quantile/distributional forecasting ve online learning","textPreview":"Calibration, conformal, quantile/distributional forecasting ve online learning","textChars":78,"textLines":1,"bbox":[400,497,700,34]}
+{"kind":"textbox","id":"sh/y9wze543","slide":7,"text":"Öncelik sırası: veri doğruluğu → finansal gerçekçilik → feature stability → validasyon → belirsizlik yönetimi","textPreview":"Öncelik sırası: veri doğruluğu → finansal gerçekçilik → feature stability → validasyon → belirsizlik yönetimi","textChars":109,"textLines":1,"bbox":[60,610,1050,25]}
+{"kind":"notes","id":"nt/4nj0xp","slide":7,"text":"Kaynak: RegimeLab proje kodu, README ve Algosense ana sayfasının görsel/iletişim yaklaşımı. https://algosense.com.tr/"}

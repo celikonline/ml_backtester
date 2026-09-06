@@ -185,6 +185,7 @@ auth_users = Table(
     Column("is_active", Integer, nullable=False, default=1),
     Column("created_at", String(40), nullable=False),
     Column("last_login_at", String(40), nullable=True),
+    Column("updated_at", String(40), nullable=True),
     Column("features", JSON, nullable=False, default=dict),
     Column("workspace_id", String(36), ForeignKey("workspaces.id"), nullable=True),
 )

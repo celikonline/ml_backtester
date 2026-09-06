@@ -25,7 +25,12 @@ def verify_password(password: str, salt: str, expected: str) -> bool:
     return hmac.compare_digest(dk.hex(), expected)
 
 
-def create_jwt(user_id: str, email: str, name: str, role: str = "user", extra: dict | None = None) -> str:
+#: Session-bound roles enforced server-side. `admin` manages users and policy
+#: limits, `user` runs research workflows, `viewer` is read-only.
+VALID_ROLES = ("admin", "user", "viewer")
+
+
+def create_jwt(user_id: str, email: str, name: str, role: str = "user", extra: dict | None = None, jti: str | None = None) -> str:
     payload = {
         "sub": user_id,
         "email": email,
@@ -33,7 +38,9 @@ def create_jwt(user_id: str, email: str, name: str, role: str = "user", extra: d
         "role": role,
         "iat": int(datetime.now(timezone.utc).timestamp()),
         "exp": int(datetime.now(timezone.utc).timestamp()) + JWT_EXPIRY_SECONDS,
-        "jti": secrets.token_urlsafe(16),
+        # The jti doubles as the auth_tokens row id, binding the JWT to a
+        # server-side session that revocation checks can audit.
+        "jti": jti or secrets.token_urlsafe(16),
     }
     if extra:
         payload.update(extra)

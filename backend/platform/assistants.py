@@ -333,23 +333,24 @@ class AssistantWorker:
                 logging.getLogger(__name__).exception("Assistant queue iteration failed")
 
 
-def assistant_router(service, actor):
+def assistant_router(service, actor, editor=None):
     api = APIRouter()
+    _editor = editor if editor is not None else actor
 
     @api.get("/assistants")
     def list_assistants(s=Depends(service)):
         return {"items": AssistantService(s).list(), "provider": provider_status()}
 
     @api.post("/assistants", status_code=201)
-    def create(body: AssistantConfig, s=Depends(service), who=Depends(actor)):
+    def create(body: AssistantConfig, s=Depends(service), who=Depends(_editor)):
         return AssistantService(s).save(body, who)
 
     @api.put("/assistants/{identifier}")
-    def update(identifier: str, body: AssistantConfig, s=Depends(service), who=Depends(actor)):
+    def update(identifier: str, body: AssistantConfig, s=Depends(service), who=Depends(_editor)):
         return AssistantService(s).save(body, who, identifier)
 
     @api.post("/assistants/{identifier}/clone", status_code=201)
-    def clone(identifier: str, s=Depends(service), who=Depends(actor)):
+    def clone(identifier: str, s=Depends(service), who=Depends(_editor)):
         manager = AssistantService(s)
         item = manager.get(identifier)
         config = {k: item[k] for k in AssistantConfig.model_fields}
@@ -365,11 +366,11 @@ def assistant_router(service, actor):
         return AssistantService(s).get_task(identifier)
 
     @api.post("/assistant-tasks/{identifier}/cancel")
-    def cancel(identifier: str, s=Depends(service), who=Depends(actor)):
+    def cancel(identifier: str, s=Depends(service), who=Depends(_editor)):
         return AssistantService(s).cancel(identifier, who)
 
     @api.post("/assistant-tasks", status_code=202)
-    def run(body: TaskInput, s=Depends(service), who=Depends(actor)):
+    def run(body: TaskInput, s=Depends(service), who=Depends(_editor)):
         return AssistantService(s).run(body, who)
 
     return api

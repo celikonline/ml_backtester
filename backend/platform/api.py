@@ -20,13 +20,63 @@ from .models import MODEL_REGISTRY
 from .research import registry
 from .families import family_registry
 from .db import audits, auth_users, auth_tokens, workspace_partners
-from .auth_utils import hash_password, verify_password, create_jwt, decode_jwt
+from .auth_utils import hash_password, verify_password, create_jwt, decode_jwt, VALID_ROLES
+
+
+def _actor_from_session(user, source, request):
+    role = (user.role or "user").lower()
+    if role not in VALID_ROLES:
+        role = "user"
+    return {"id": user.id, "role": role, "source": source,
+            "request_id": request.headers.get("x-request-id", str(uuid.uuid4()))[:64]}
+
+
+def _validate_session(request):
+    """Decode the bearer JWT and bind it to its server-side session row.
+
+    A structurally valid JWT is NOT enough: the row id must equal the token
+    ``jti`` for the same user, and the row must be unrevoked and unexpired.
+    Raises DomainError(401) otherwise, so revoked sessions stop working
+    on every endpoint — including /api/v1 via :func:`actor`.
+    """
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer ") or not authorization[7:].strip():
+        raise DomainError("Yetkilendirme başlığı gerekli.", 401, "unauthorized")
+    payload = decode_jwt(authorization[7:].strip())
+    if not payload or "sub" not in payload or "jti" not in payload:
+        raise DomainError("Geçersiz token.", 401, "invalid_token")
+    engine = request.app.state.experiments.engine
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with engine.connect() as con:
+        sess = con.execute(select(auth_tokens).where(auth_tokens.c.id == payload["jti"])).first()
+        if sess is None or sess.user_id != payload["sub"]:
+            raise DomainError("Geçersiz token.", 401, "invalid_token")
+        if sess.revoked:
+            raise DomainError("Oturum iptal edilmiş.", 401, "session_revoked")
+        if sess.expires_at <= now_iso:
+            raise DomainError("Oturum süresi dolmuş.", 401, "session_expired")
+        user = con.execute(select(auth_users).where(auth_users.c.id == payload["sub"])).first()
+        if user is None:
+            raise DomainError("Kullanıcı bulunamadı.", 404, "not_found")
+        if not user.is_active:
+            raise DomainError("Hesap aktif değil.", 403, "inactive")
+    return {"user": user, "session_id": payload["jti"]}
 
 
 def actor(request:Request):
     key=os.environ.get("REGIMELAB_API_KEY")
     authorization=request.headers.get("authorization","")
-    if key and not hmac.compare_digest(authorization,"Bearer "+key):
+    if key and hmac.compare_digest(authorization,"Bearer "+key):
+        return {"id":"api-client","role":"admin","source":request.headers.get("x-regimelab-source","REST"),
+                "request_id":request.headers.get("x-request-id",str(uuid.uuid4()))[:64]}
+    if authorization.startswith("Bearer ") and authorization[7:].strip():
+        # A presented JWT must validate against its session row; revoked or
+        # forged tokens are rejected instead of falling through to local-user.
+        sess=_validate_session(request)
+        origin=request.headers.get("origin")
+        source=request.headers.get("x-regimelab-source","WEB" if origin else "REST")
+        return _actor_from_session(sess["user"], source if source in {"WEB","REST","MCP"} else "REST", request)
+    if key:
         raise DomainError("API anahtarı gerekli.",401,"unauthorized")
     if not key and request.client and request.client.host not in {"127.0.0.1","::1","testclient"}:
         raise DomainError("Yerel mod yalnızca localhost istemcilerine açıktır.",403,"local_only")
@@ -35,8 +85,22 @@ def actor(request:Request):
         from urllib.parse import urlparse
         if urlparse(origin).hostname not in {"127.0.0.1","localhost","::1"}: raise DomainError("Bu Origin izinli değil.",403,"origin_rejected")
     source=request.headers.get("x-regimelab-source","WEB" if origin else "REST")
-    return {"id":"api-client" if key else "local-user","source":source if source in {"WEB","REST","MCP"} else "REST",
+    return {"id":"local-user","role":"admin","source":source if source in {"WEB","REST","MCP"} else "REST",
             "request_id":request.headers.get("x-request-id",str(uuid.uuid4()))[:64]}
+
+
+def require_role(*roles):
+    """FastAPI dependency gating an endpoint to the given session roles."""
+    allowed = set(roles)
+    def dep(who=Depends(actor)):
+        if who.get("role") not in allowed:
+            raise DomainError("Bu işlem için yetkiniz yok.", 403, "forbidden")
+        return who
+    return dep
+
+
+editor = require_role("admin", "user")
+admin_only = require_role("admin")
 
 
 def service(request:Request): return request.app.state.experiments
@@ -60,7 +124,7 @@ def router(dataset_loader, datasets_list):
 
     api=APIRouter(prefix="/api/v1",dependencies=[Depends(actor)],lifespan=lifespan)
     from .assistants import assistant_router
-    api.include_router(assistant_router(service, actor))
+    api.include_router(assistant_router(service, actor, editor))
 
     @api.get("/capabilities")
     def capabilities():
@@ -80,7 +144,7 @@ def router(dataset_loader, datasets_list):
     def research_budget(workspace_id:str|None=None,s=Depends(service)): return s.budget_status(workspace_id)
 
     @api.patch("/research/budget")
-    def update_budget(body:dict,workspace_id:str|None=None,s=Depends(service),who=Depends(actor)):
+    def update_budget(body:dict,workspace_id:str|None=None,s=Depends(service),who=Depends(admin_only)):
         return s.update_budget_limits(body.get("limits", {}),who,workspace_id)
 
     @api.get("/research/ledger")
@@ -96,22 +160,22 @@ def router(dataset_loader, datasets_list):
     def list_workspaces(include_archived:bool=False,s=Depends(service)): return s.list_workspaces(include_archived)
 
     @api.post("/workspaces",status_code=201)
-    def create_workspace(body:WorkspaceCreate,s=Depends(service),who=Depends(actor)): return s.create_workspace(body,who)
+    def create_workspace(body:WorkspaceCreate,s=Depends(service),who=Depends(editor)): return s.create_workspace(body,who)
 
     @api.get("/workspaces/{identifier}")
     def get_workspace(identifier:str,s=Depends(service)): return s.get_workspace(identifier)
 
     @api.patch("/workspaces/{identifier}")
-    def patch_workspace(identifier:str,body:WorkspacePatch,s=Depends(service),who=Depends(actor)): return s.patch_workspace(identifier,body,who)
+    def patch_workspace(identifier:str,body:WorkspacePatch,s=Depends(service),who=Depends(editor)): return s.patch_workspace(identifier,body,who)
 
     @api.post("/workspaces/{identifier}/archive")
-    def archive_workspace(identifier:str,s=Depends(service),who=Depends(actor)): return s.archive_workspace(identifier,who)
+    def archive_workspace(identifier:str,s=Depends(service),who=Depends(editor)): return s.archive_workspace(identifier,who)
 
     @api.get("/search-spaces")
     def list_search_spaces(workspace_id:str|None=None,s=Depends(service)): return s.list_search_spaces(workspace_id)
 
     @api.post("/search-spaces", status_code=201)
-    def create_search_space(body:SearchSpaceDefinition,workspace_id:str|None=None,s=Depends(service),who=Depends(actor)): return s.create_search_space(body,who,workspace_id)
+    def create_search_space(body:SearchSpaceDefinition,workspace_id:str|None=None,s=Depends(service),who=Depends(editor)): return s.create_search_space(body,who,workspace_id)
 
     @api.get("/search-spaces/{identifier}")
     def get_search_space(identifier:str,s=Depends(service)): return s.get_search_space(identifier)
@@ -141,7 +205,7 @@ def router(dataset_loader, datasets_list):
         return s.list(q,status,model,optimizer,tag,workspace_id)
 
     @api.post("/experiments",status_code=201)
-    def create(spec:ExperimentSpec,workspace_id:str|None=None,s=Depends(service),who=Depends(actor)): return s.create(spec,who,workspace_id=workspace_id)
+    def create(spec:ExperimentSpec,workspace_id:str|None=None,s=Depends(service),who=Depends(editor)): return s.create(spec,who,workspace_id=workspace_id)
 
     @api.get("/experiments")
     def list_experiments(q:str="", status:str|None=None, model:str|None=None,
@@ -150,7 +214,7 @@ def router(dataset_loader, datasets_list):
         return s.list(q, status, model, optimizer, tag, workspace_id)
 
     @api.post("/experiments/compare")
-    def compare(body:CompareSpec,s=Depends(service),who=Depends(actor)):
+    def compare(body:CompareSpec,s=Depends(service),who=Depends(editor)):
         report=s.compare(body.experiment_ids)
         with s.engine.begin() as con: s.audit(con,"experiments.compare",None,who,{"ids":body.experiment_ids})
         return report
@@ -169,12 +233,12 @@ def router(dataset_loader, datasets_list):
         return s.seal_history(item["snapshot_id"])
 
     @api.post("/experiments/{identifier}/seal/invalidate")
-    def invalidate_seal(identifier:str,payload:dict,s=Depends(service),who=Depends(actor)):
+    def invalidate_seal(identifier:str,payload:dict,s=Depends(service),who=Depends(editor)):
         item=s.get(identifier)
         return s.invalidate_seal(s.seal_status(item["snapshot_id"])["seal_id"],payload.get("reason",""),who)
 
     @api.post("/experiments/{identifier}/seal/rotate")
-    def rotate_seal(identifier:str,payload:dict,s=Depends(service),who=Depends(actor)):
+    def rotate_seal(identifier:str,payload:dict,s=Depends(service),who=Depends(editor)):
         item=s.get(identifier)
         return s.rotate_seal(item["snapshot_id"],payload.get("reason",""),who)
 
@@ -182,17 +246,17 @@ def router(dataset_loader, datasets_list):
     def lineage(identifier:str,s=Depends(service)): return s.lineage(identifier)
 
     @api.patch("/experiments/{identifier}")
-    def patch(identifier:str,body:ExperimentSpec,s=Depends(service),who=Depends(actor)): return s.patch(identifier,body,who)
+    def patch(identifier:str,body:ExperimentSpec,s=Depends(service),who=Depends(editor)): return s.patch(identifier,body,who)
 
     @api.post("/experiments/{identifier}/clone",status_code=201)
-    def clone(identifier:str,body:CloneSpec,s=Depends(service),who=Depends(actor)): return s.clone(identifier,body,who)
+    def clone(identifier:str,body:CloneSpec,s=Depends(service),who=Depends(editor)): return s.clone(identifier,body,who)
 
     @api.post("/experiments/{identifier}/run",status_code=202)
-    def run(identifier:str,idempotency_key:str|None=Header(default=None),s=Depends(service),who=Depends(actor)):
+    def run(identifier:str,idempotency_key:str|None=Header(default=None),s=Depends(service),who=Depends(editor)):
         return s.run(identifier,idempotency_key,who)
 
     @api.post("/experiments/{identifier}/cancel")
-    def cancel(identifier:str,s=Depends(service),who=Depends(actor)): return s.cancel(identifier,who)
+    def cancel(identifier:str,s=Depends(service),who=Depends(editor)): return s.cancel(identifier,who)
 
     @api.get("/experiments/{identifier}/status")
     def status(identifier:str,s=Depends(service)):
@@ -299,7 +363,7 @@ def router(dataset_loader, datasets_list):
         return nbs.list_environments()
 
     @api.post("/notebook-environments", status_code=201)
-    def create_nb_environment(body:dict, nbs=Depends(nb_service), who=Depends(actor)):
+    def create_nb_environment(body:dict, nbs=Depends(nb_service), who=Depends(editor)):
         return nbs.create_environment(body, who)
 
     @api.get("/notebook-environments/{env_id}")
@@ -315,7 +379,7 @@ def router(dataset_loader, datasets_list):
         description:str=Query(default=""),
         tags:str=Query(default=""),
         auto_sanitize:bool=Query(default=False),
-        nbs=Depends(nb_service), who=Depends(actor),
+        nbs=Depends(nb_service), who=Depends(editor),
     ):
         nb_bytes = await file.read()
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
@@ -335,7 +399,7 @@ def router(dataset_loader, datasets_list):
         return nbs.get_notebook(notebook_id, workspace_id=workspace_id)
 
     @api.post("/workspaces/{workspace_id}/notebooks/{notebook_id}/archive")
-    def archive_workspace_notebook(workspace_id:str, notebook_id:str, nbs=Depends(nb_service), who=Depends(actor)):
+    def archive_workspace_notebook(workspace_id:str, notebook_id:str, nbs=Depends(nb_service), who=Depends(editor)):
         nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
         return nbs.archive_notebook(nb["id"], who)
 
@@ -364,7 +428,7 @@ def router(dataset_loader, datasets_list):
         workspace_id:str, notebook_id:str,
         file:UploadFile=File(...),
         change_summary:str=Query(default=""),
-        nbs=Depends(nb_service), who=Depends(actor),
+        nbs=Depends(nb_service), who=Depends(editor),
     ):
         nb_bytes = await file.read()
         nb = nbs.get_notebook(notebook_id, workspace_id=workspace_id)
@@ -387,7 +451,7 @@ def router(dataset_loader, datasets_list):
 
     # Notebook runs
     @api.post("/workspaces/{workspace_id}/notebook-runs", status_code=202)
-    def create_notebook_run(workspace_id:str, body:dict, nbs=Depends(nb_service), who=Depends(actor)):
+    def create_notebook_run(workspace_id:str, body:dict, nbs=Depends(nb_service), who=Depends(editor)):
         return nbs.create_run(
             workspace_id=workspace_id,
             notebook_id=body["notebook_id"],
@@ -408,7 +472,7 @@ def router(dataset_loader, datasets_list):
         return nbs.get_run(run_id, workspace_id=workspace_id)
 
     @api.post("/workspaces/{workspace_id}/notebook-runs/{run_id}/cancel")
-    def cancel_notebook_run(workspace_id:str, run_id:str, nbs=Depends(nb_service), who=Depends(actor)):
+    def cancel_notebook_run(workspace_id:str, run_id:str, nbs=Depends(nb_service), who=Depends(editor)):
         nbs.get_run(run_id, workspace_id=workspace_id)
         return nbs.cancel_run(run_id, who)
 
@@ -454,11 +518,11 @@ def router(dataset_loader, datasets_list):
         return nbs.list_secrets(workspace_id)
 
     @api.put("/workspaces/{workspace_id}/secrets/{key_name}")
-    def set_workspace_secret(workspace_id:str, key_name:str, body:dict, nbs=Depends(nb_service), who=Depends(actor)):
+    def set_workspace_secret(workspace_id:str, key_name:str, body:dict, nbs=Depends(nb_service), who=Depends(admin_only)):
         return nbs.set_secret(workspace_id, key_name, body.get("value",""), body.get("description",""), who)
 
     @api.delete("/workspaces/{workspace_id}/secrets/{key_name}")
-    def delete_workspace_secret(workspace_id:str, key_name:str, nbs=Depends(nb_service), who=Depends(actor)):
+    def delete_workspace_secret(workspace_id:str, key_name:str, nbs=Depends(nb_service), who=Depends(admin_only)):
         return nbs.delete_secret(workspace_id, key_name, who)
 
     return api
@@ -468,12 +532,24 @@ def auth_router():
     """Authentication routes - no actor dependency, JWT-based."""
     auth = APIRouter(prefix="/api/auth")
 
+    def _issue_session(con, request, row):
+        """Persist a session row and mint the JWT bound to it (jti == row id)."""
+        session_id = secrets.token_hex(16)
+        now = datetime.now(timezone.utc).isoformat()
+        expires = datetime.fromtimestamp(datetime.now(tz=timezone.utc).timestamp() + 86400, tz=timezone.utc).isoformat()
+        con.execute(auth_tokens.insert().values(
+            id=session_id, user_id=row.id,
+            token_hash=hashlib.sha256(session_id.encode()).hexdigest(),
+            issued_at=now, expires_at=expires, revoked=0, user_agent=str(request.headers.get("user-agent", ""))
+        ))
+        return session_id, create_jwt(row.id, row.email, row.name, row.role, jti=session_id)
+
     @auth.post("/register")
     def register(request: Request, body: dict):
         name = body.get("name", "").strip()
         email = body.get("email", "").strip().lower()
         password = body.get("password", "")
-        if not email or not password:
+        if not name or not email or not password:
             raise DomainError("İsim, e-posta ve şifre gereklidir.", 422, "validation_error")
         if len(password) < 8:
             raise DomainError("Şifre en az 8 karakter olmalı.", 422, "validation_error")
@@ -483,15 +559,19 @@ def auth_router():
         engine = request.app.state.experiments.engine
         with engine.begin() as con:
             existing = con.execute(select(auth_users.c.id).where(auth_users.c.email == email)).scalar()
-        if existing:
-            raise DomainError("Bu e-posta zaten kayıtlı.", 409, "email_conflict")
-        with engine.begin() as con:
+            if existing:
+                raise DomainError("Bu e-posta zaten kayıtlı.", 409, "email_conflict")
+            # Bootstrap: the first account on a fresh database becomes admin so
+            # role management is never locked out. Demo/dev logins stay "user".
+            admin_exists = con.execute(select(auth_users.c.id).where(auth_users.c.role == "admin")).first()
+            role = "user" if admin_exists else "admin"
             con.execute(auth_users.insert().values(
                 id=user_id, email=email, password_hash=pw_hash, password_salt=salt,
-                name=name, role="user", is_active=1, created_at=now, last_login_at=None, features={}, workspace_id=None
+                name=name, role=role, is_active=1, created_at=now, last_login_at=now, features={}, workspace_id=None
             ))
-        token = create_jwt(user_id, email, name)
-        return {"id": user_id, "email": email, "name": name, "token": token}
+            row = con.execute(select(auth_users).where(auth_users.c.id == user_id)).first()
+            session_id, token = _issue_session(con, request, row)
+        return {"id": user_id, "email": email, "name": name, "role": role, "token": token, "session_id": session_id}
 
     @auth.post("/login")
     def login(request: Request, body: dict):
@@ -518,63 +598,40 @@ def auth_router():
         if not row.is_active:
             raise DomainError("Hesap aktif değil.", 403, "inactive")
         now = datetime.now(timezone.utc).isoformat()
-        token_id = secrets.token_hex(16)
-        expires = datetime.fromtimestamp(datetime.now(tz=timezone.utc).timestamp() + 86400, tz=timezone.utc).isoformat()
         with engine.begin() as con:
             con.execute(auth_users.update().where(auth_users.c.id == row.id).values(last_login_at=now))
-            con.execute(auth_tokens.insert().values(
-                id=token_id, user_id=row.id,
-                token_hash=hashlib.sha256(token_id.encode()).hexdigest(),
-                issued_at=now, expires_at=expires, revoked=0, user_agent=str(request.headers.get("user-agent", ""))
-            ))
-        token = create_jwt(row.id, row.email, row.name, row.role)
-        return {"id": row.id, "email": row.email, "name": row.name, "role": row.role, "token": token}
+            row = con.execute(select(auth_users).where(auth_users.c.id == row.id)).first()
+            session_id, token = _issue_session(con, request, row)
+        return {"id": row.id, "email": row.email, "name": row.name, "role": row.role, "token": token, "session_id": session_id}
 
     @auth.get("/me")
     def me(request: Request):
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise DomainError("Yetkilendirme başlığı gerekli.", 401, "unauthorized")
-        payload = decode_jwt(auth_header.removeprefix("Bearer "))
-        if not payload:
-            raise DomainError("Geçersiz token.", 401, "invalid_token")
-        engine = request.app.state.experiments.engine
-        user = engine.connect().execute(select(auth_users).where(auth_users.c.id == payload["sub"])).first()
-        if not user:
-            raise DomainError("Kullanıcı bulunamadı.", 404, "not_found")
+        sess = _validate_session(request)
+        user = sess["user"]
         return {"id": user.id, "email": user.email, "name": user.name, "role": user.role,
-                "created_at": user.created_at, "last_login_at": user.last_login_at}
+                "created_at": user.created_at, "last_login_at": user.last_login_at,
+                "session_id": sess["session_id"]}
 
     @auth.patch("/me")
     def update_me(request: Request, body: dict):
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise DomainError("Yetkilendirme başlığı gerekli.", 401, "unauthorized")
-        payload = decode_jwt(auth_header.removeprefix("Bearer "))
-        if not payload:
-            raise DomainError("Geçersiz token.", 401, "invalid_token")
+        sess = _validate_session(request)
         name = (body.get("name") or "").strip()
         if not name or len(name) < 2:
             raise DomainError("Ad en az 2 karakter olmalı.", 422, "validation_error")
         engine = request.app.state.experiments.engine
         with engine.begin() as con:
-            con.execute(auth_users.update().where(auth_users.c.id == payload["sub"]).values(name=name, updated_at=datetime.now(timezone.utc).isoformat()))
-        return {"id": payload["sub"], "name": name, "email": None}
+            con.execute(auth_users.update().where(auth_users.c.id == sess["user"].id).values(name=name, updated_at=datetime.now(timezone.utc).isoformat()))
+        return {"id": sess["user"].id, "name": name, "email": sess["user"].email}
 
     @auth.post("/password")
     def change_password(request: Request, body: dict):
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise DomainError("Yetkilendirme başlığı gerekli.", 401, "unauthorized")
-        payload = decode_jwt(auth_header.removeprefix("Bearer "))
-        if not payload:
-            raise DomainError("Geçersiz token.", 401, "invalid_token")
+        sess = _validate_session(request)
         old_pw = body.get("old_password", "")
         new_pw = body.get("new_password", "")
         if not old_pw or not new_pw or len(new_pw) < 8:
             raise DomainError("Eski ve yeni şifre gerekli; yeni şifre en az 8 karakter.", 422, "validation_error")
         engine = request.app.state.experiments.engine
-        row = engine.connect().execute(select(auth_users).where(auth_users.c.id == payload["sub"])).first()
+        row = engine.connect().execute(select(auth_users).where(auth_users.c.id == sess["user"].id)).first()
         if not row or not verify_password(old_pw, row.password_salt, row.password_hash):
             raise DomainError("Eski şifre hatalı.", 401, "invalid_credentials")
         salt, pw_hash = hash_password(new_pw)
@@ -585,18 +642,13 @@ def auth_router():
 
     @auth.post("/email")
     def change_email(request: Request, body: dict):
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise DomainError("Yetkilendirme başlığı gerekli.", 401, "unauthorized")
-        payload = decode_jwt(auth_header.removeprefix("Bearer "))
-        if not payload:
-            raise DomainError("Geçersiz token.", 401, "invalid_token")
+        sess = _validate_session(request)
         new_email = (body.get("email") or "").strip().lower()
         password = body.get("password", "")
         if not new_email or not password:
             raise DomainError("E-posta ve şifre gerekli.", 422, "validation_error")
         engine = request.app.state.experiments.engine
-        row = engine.connect().execute(select(auth_users).where(auth_users.c.id == payload["sub"])).first()
+        row = engine.connect().execute(select(auth_users).where(auth_users.c.id == sess["user"].id)).first()
         if not row or not verify_password(password, row.password_salt, row.password_hash):
             raise DomainError("Şifre hatalı.", 401, "invalid_credentials")
         existing = engine.connect().execute(select(auth_users.c.id).where(auth_users.c.email == new_email)).scalar()
@@ -609,54 +661,112 @@ def auth_router():
 
     @auth.get("/sessions")
     def sessions(request: Request):
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise DomainError("Yetkilendirme başlığı gerekli.", 401, "unauthorized")
-        payload = decode_jwt(auth_header.removeprefix("Bearer "))
-        if not payload:
-            raise DomainError("Geçersiz token.", 401, "invalid_token")
+        sess = _validate_session(request)
         engine = request.app.state.experiments.engine
         rows = engine.connect().execute(
-            select(auth_tokens).where(auth_tokens.c.user_id == payload["sub"]).order_by(auth_tokens.c.issued_at.desc())
+            select(auth_tokens).where(auth_tokens.c.user_id == sess["user"].id).order_by(auth_tokens.c.issued_at.desc())
         ).mappings().all()
         now_iso = datetime.now(timezone.utc).isoformat()
         return {"sessions": [
             {"id": r.id, "issued_at": r.issued_at, "expires_at": r.expires_at,
              "last_used": r.issued_at, "user_agent": r.user_agent or "",
+             "current": r.id == sess["session_id"],
              "active": r.revoked == 0 and r.expires_at > now_iso}
             for r in rows]}
 
     @auth.post("/token/revoke")
     def revoke_token(request: Request, body: dict):
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise DomainError("Yetkilendirme başlığı gerekli.", 401, "unauthorized")
+        sess = _validate_session(request)
         token_id = (body.get("token_id") or "").strip()
         if not token_id:
             raise DomainError("Token kimliği gerekli.", 422, "validation_error")
         engine = request.app.state.experiments.engine
         with engine.begin() as con:
+            target = con.execute(select(auth_tokens).where(auth_tokens.c.id == token_id)).first()
+            if target is None:
+                raise DomainError("Token bulunamadı.", 404, "not_found")
+            # Ownership enforced: only the session owner — or an admin —
+            # may revoke a session. This closes horizontal escalation.
+            if target.user_id != sess["user"].id and (sess["user"].role or "user").lower() != "admin":
+                raise DomainError("Token bulunamadı.", 404, "not_found")
             con.execute(auth_tokens.update().where(auth_tokens.c.id == token_id).values(revoked=1))
         return {"message": "Token iptal edildi."}
 
+    @auth.post("/token/revoke-all")
+    def revoke_all_tokens(request: Request):
+        sess = _validate_session(request)
+        engine = request.app.state.experiments.engine
+        with engine.begin() as con:
+            con.execute(auth_tokens.update().where(auth_tokens.c.user_id == sess["user"].id).values(revoked=1))
+        return {"message": "Tüm oturumlar sonlandırıldı."}
+
+    @auth.post("/logout")
+    def logout(request: Request):
+        sess = _validate_session(request)
+        engine = request.app.state.experiments.engine
+        with engine.begin() as con:
+            con.execute(auth_tokens.update().where(auth_tokens.c.id == sess["session_id"]).values(revoked=1))
+        return {"message": "Çıkış yapıldı."}
+
+    @auth.get("/users")
+    def list_users(request: Request):
+        sess = _validate_session(request)
+        if (sess["user"].role or "user").lower() != "admin":
+            raise DomainError("Bu işlem için yetkiniz yok.", 403, "forbidden")
+        engine = request.app.state.experiments.engine
+        rows = engine.connect().execute(select(auth_users).order_by(auth_users.c.created_at)).mappings().all()
+        return {"users": [
+            {"id": r.id, "email": r.email, "name": r.name, "role": r.role,
+             "is_active": bool(r.is_active), "created_at": r.created_at, "last_login_at": r.last_login_at}
+            for r in rows]}
+
+    @auth.patch("/users/{user_id}")
+    def update_user(user_id: str, request: Request, body: dict):
+        sess = _validate_session(request)
+        if (sess["user"].role or "user").lower() != "admin":
+            raise DomainError("Bu işlem için yetkiniz yok.", 403, "forbidden")
+        if user_id == sess["user"].id:
+            raise DomainError("Kendi hesabınızı değiştiremezsiniz.", 403, "forbidden")
+        updates = {}
+        if "role" in body:
+            role = str(body.get("role") or "").lower()
+            if role not in VALID_ROLES:
+                raise DomainError("Geçersiz rol.", 422, "validation_error")
+            updates["role"] = role
+        if "is_active" in body:
+            updates["is_active"] = 1 if body.get("is_active") else 0
+        if not updates:
+            raise DomainError("Güncellenecek alan yok.", 422, "validation_error")
+        engine = request.app.state.experiments.engine
+        with engine.begin() as con:
+            target = con.execute(select(auth_users).where(auth_users.c.id == user_id)).first()
+            if target is None:
+                raise DomainError("Kullanıcı bulunamadı.", 404, "not_found")
+            # Never strand the system without an active admin.
+            if (updates.get("role", target.role) != "admin" or updates.get("is_active", target.is_active) == 0) and target.role == "admin":
+                remaining = con.execute(
+                    select(func.count()).select_from(auth_users).where(
+                        auth_users.c.role == "admin", auth_users.c.is_active == 1, auth_users.c.id != user_id)
+                ).scalar() or 0
+                if remaining == 0:
+                    raise DomainError("Son aktif admin değiştirilemez.", 409, "last_admin")
+            con.execute(auth_users.update().where(auth_users.c.id == user_id).values(**updates))
+            if updates.get("is_active") == 0:
+                con.execute(auth_tokens.update().where(auth_tokens.c.user_id == user_id).values(revoked=1))
+        row = engine.connect().execute(select(auth_users).where(auth_users.c.id == user_id)).first()
+        return {"id": row.id, "email": row.email, "name": row.name, "role": row.role, "is_active": bool(row.is_active)}
+
     @auth.get("/stats")
     def user_stats(request: Request):
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise DomainError("Yetkilendirme başlığı gerekli.", 401, "unauthorized")
-        payload = decode_jwt(auth_header.removeprefix("Bearer "))
-        if not payload:
-            raise DomainError("Geçersiz token.", 401, "invalid_token")
+        sess = _validate_session(request)
+        user = sess["user"]
         engine = request.app.state.experiments.engine
-        row = engine.connect().execute(select(auth_users).where(auth_users.c.id == payload["sub"])).first()
-        if not row:
-            raise DomainError("Kullanıcı bulunamadı.", 404, "not_found")
         with engine.begin() as con:
             project_count = con.execute(select(func.count()).select_from(experiments)).scalar() or 0
             backtest_count = con.execute(select(func.count()).select_from(runs).where(runs.c.status == "COMPLETED")).scalar() or 0
         return {
-            "id": row.id, "name": row.name, "email": row.email, "role": row.role,
-            "created_at": row.created_at, "last_login_at": row.last_login_at,
+            "id": user.id, "name": user.name, "email": user.email, "role": user.role,
+            "created_at": user.created_at, "last_login_at": user.last_login_at,
             "projects": project_count,
             "backtests": backtest_count,
             "live_volume": 0, "public_algorithms": 0, "live_deployments": 0,

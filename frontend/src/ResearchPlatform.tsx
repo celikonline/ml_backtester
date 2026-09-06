@@ -11,6 +11,54 @@ import Assistants from './Assistants';
 
 const palette=['#55dfb0','#8b91f3','#efb66c','#62b5ef','#e78fbe'];
 
+function SpecReview({spec,datasets,models,families,spaces,goto}:{spec:Spec;datasets:Dataset[];models:{id:string;name:string}[];families:{id:string;name:string}[];spaces:SearchSpace[];goto:(s:number)=>void}){
+  const { t, fmt } = useLang();
+  const dsName=datasets.find(d=>d.id===spec.dataset_id)?.name||spec.dataset_id;
+  const modelName=(id:string)=>models.find(m=>m.id===id)?.name||id;
+  const famName=(id:string)=>families.find(f=>f.id===id)?.name||id;
+  const spaceName=spec.search_space_id?(spaces.find(s=>s.id===spec.search_space_id)?.name||spec.search_space_id):t('rp.spaceCustom');
+  const yn=(v:boolean)=>v?t('rp.revYes'):t('rp.revNo');
+  const sections:{title:string;step:number;items:[string,string][]}[]=[
+    {title:t('rp.revGeneral'),step:0,items:[
+      [t('rp.expName'),spec.name||'—'],
+      [t('rp.desc'),spec.description||'—'],
+      [t('rp.revDataset'),dsName],
+      [t('rp.timeframe'),spec.timeframe],
+      [t('rp.revSpace'),spaceName],
+      [t('rp.revRegimes'),String(spec.regime_states)],
+      [t('rp.seed'),String(spec.seed)],
+    ]},
+    {title:t('rp.revFeatures'),step:1,items:[
+      [t('rp.stepFeat'),spec.features.groups.join(', ')||'—'],
+      [t('rp.pool'),(spec.features.families||[]).map(famName).join(', ')||'—'],
+      [t('rp.revSelected'),spec.features.names.length?spec.features.names.join(', '):t('rp.revAllPool')],
+    ]},
+    {title:t('rp.revModels'),step:2,items:[
+      [t('rp.stepModels'),spec.models.map(modelName).join(' + ')||'—'],
+    ]},
+    {title:t('rp.revOpt'),step:3,items:[
+      [t('rp.optimizer'),spec.optimization.algorithm==='genetic'?t('rp.genetic'):t('rp.fixedCmp')],
+      [t('rp.objective'),spec.optimization.objective==='return'?t('rp.maxRet'):t('rp.maxSharpe')],
+      [`${t('rp.pop')} / ${t('rp.gen')}`,`${spec.optimization.population} / ${spec.optimization.generations}`],
+      [`${t('rp.minF')} / ${t('rp.maxF')}`,`${spec.optimization.min_features} / ${spec.optimization.max_features}`],
+      [t('rp.maxDdPct'),`%${fmt(spec.optimization.max_drawdown*100)}`],
+      [t('rp.minTrades'),fmt(spec.optimization.min_trades??0,0)],
+      [t('rp.maxExposure'),spec.optimization.max_exposure===null||spec.optimization.max_exposure===undefined?'—':`%${fmt(spec.optimization.max_exposure*100)}`],
+      [t('rp.revHp'),yn(!!spec.optimization.hyperparameters)],
+      [t('rp.revThresholds'),(spec.optimization.thresholds_bps||[]).join(', ')||'—'],
+    ]},
+    {title:t('rp.revVal'),step:4,items:[
+      [t('rp.valMethod'),spec.validation.method==='holdout'?t('rp.holdout'):t('rp.wf')],
+      [`${t('rp.folds')} / ${t('rp.trainPct')} / ${t('rp.gapBars')}`,`${spec.validation.folds} / %${fmt(spec.validation.train_ratio*100,0)} / ${spec.validation.gap}`],
+      [t('rp.revTestPct'),`%${fmt((.85-spec.validation.train_ratio)*100,0)}`],
+      [t('rp.revLocked'),yn(!!spec.validation.locked_test)],
+      [`${t('rp.costBp')} / ${t('rp.slipBp')}`,`${fmt(spec.backtest.cost_bps)} / ${fmt(spec.backtest.slippage_bps)} bp`],
+      [t('rp.capUsd'),`$${fmt(spec.backtest.capital,0)}`],
+    ]},
+  ];
+  return <div className="spec-review">{sections.map(s=><section key={s.title}><div className="spec-review-head"><h3>{s.title}</h3><button type="button" className="text-button" onClick={()=>goto(s.step)}>{t('rp.revEdit')}</button></div><div className="table-wrap"><table className="spec-review-table"><thead><tr><th>{t('rp.revField')}</th><th>{t('rp.revValue')}</th></tr></thead><tbody>{s.items.map(([k,v])=><tr key={k}><td>{k}</td><td>{v}</td></tr>)}</tbody></table></div></section>)}</div>;
+}
+
 export default function ResearchPlatform({newRequest}:{newRequest:number}){
   const { t, lang, fmt, locale } = useLang();
   const { currentId: wsId } = useWorkspace();
@@ -119,7 +167,7 @@ const [totalLedger,setTotalLedger]=useState(0);
     {step===2&&<div className="model-picker">{models.map(m=><label key={m.id}><input type="checkbox" checked={spec.models.includes(m.id)} onChange={()=>setSpec({...spec,search_space_id:null,models:spec.models.includes(m.id)?spec.models.filter(n=>n!==m.id):[...spec.models,m.id]})}/><b>{m.name}</b><small>{t('rp.retReg')}</small></label>)}<p className="footnote">{t('rp.bestVal')}</p></div>}
     {step===3&&<><label>{t('rp.optimizer')}<select value={spec.optimization.algorithm} onChange={e=>setSpec({...spec,search_space_id:null,optimization:{...spec.optimization,algorithm:e.target.value}})}><option value="none">{t('rp.fixedCmp')}</option><option value="genetic">{t('rp.genetic')}</option></select></label><div className="form-grid">{(['population','generations','min_features','max_features'] as const).map(k=><label key={k}>{({population:t('rp.pop'),generations:t('rp.gen'),min_features:t('rp.minF'),max_features:t('rp.maxF')})[k]}<input type="number" min={k==='population'?4:1} max={k==='population'?32:k==='generations'?20:80} required value={spec.optimization[k]} onChange={e=>setSpec({...spec,search_space_id:null,optimization:{...spec.optimization,[k]:Number(e.target.value)}})}/></label>)}</div><label>{t('rp.objective')}<select value={spec.optimization.objective} onChange={e=>setSpec({...spec,search_space_id:null,optimization:{...spec.optimization,objective:e.target.value}})}><option value="sharpe">{t('rp.maxSharpe')}</option><option value="return">{t('rp.maxRet')}</option></select></label><label>{t('rp.maxDdPct')}<input type="number" min="1" max="100" required value={spec.optimization.max_drawdown*100} onChange={e=>setSpec({...spec,search_space_id:null,optimization:{...spec.optimization,max_drawdown:Number(e.target.value)/100}})}/></label><label>{t('rp.minTrades')}<input type="number" min="0" max="100000" required value={spec.optimization.min_trades??0} onChange={e=>setSpec({...spec,search_space_id:null,optimization:{...spec.optimization,min_trades:Number(e.target.value)}})}/></label><label>{t('rp.maxExposure')}<input type="number" min="1" max="100" step="1" value={spec.optimization.max_exposure===null||spec.optimization.max_exposure===undefined?'':Math.round(spec.optimization.max_exposure*100)} onChange={e=>setSpec({...spec,search_space_id:null,optimization:{...spec.optimization,max_exposure:e.target.value===''?null:Number(e.target.value)/100}})}/></label><label>{t('rp.maxRegimeDd')}<input type="number" min="1" max="100" step="1" value={spec.optimization.max_worst_regime_drawdown===null||spec.optimization.max_worst_regime_drawdown===undefined?'':Math.round(spec.optimization.max_worst_regime_drawdown*100)} onChange={e=>setSpec({...spec,search_space_id:null,optimization:{...spec.optimization,max_worst_regime_drawdown:e.target.value===''?null:Number(e.target.value)/100}})}/></label><p className="footnote">{t('rp.limits')} {spec.optimization.algorithm==='none'?spec.models.length:spec.optimization.population*spec.optimization.generations}.</p></>}
     {step===4&&<><div className="form-grid"><label>{t('rp.valMethod')}<select value={spec.validation.method} onChange={e=>setSpec({...spec,validation:{...spec.validation,method:e.target.value}})}><option value="walk_forward">{t('rp.wf')}</option><option value="holdout">{t('rp.holdout')}</option></select></label><label>{t('rp.folds')}<input required type="number" min="2" max="5" value={spec.validation.folds} onChange={e=>setSpec({...spec,validation:{...spec.validation,folds:Number(e.target.value)}})}/></label><label>{t('rp.trainPct')}<input required type="number" min="50" max="75" step="5" value={Math.round(spec.validation.train_ratio*100)} onChange={e=>setSpec({...spec,validation:{...spec.validation,train_ratio:Number(e.target.value)/100}})}/></label><label>{t('rp.gapBars')}<input required type="number" min="2" max="30" value={spec.validation.gap} onChange={e=>setSpec({...spec,validation:{...spec.validation,gap:Number(e.target.value)}})}/></label><label>{t('rp.costBp')}<input required type="number" min="0" max="20" step="0.1" value={spec.backtest.cost_bps} onChange={e=>setSpec({...spec,backtest:{...spec.backtest,cost_bps:Number(e.target.value)}})}/></label><label>{t('rp.slipBp')}<input required type="number" min="0" max="20" step="0.1" value={spec.backtest.slippage_bps} onChange={e=>setSpec({...spec,backtest:{...spec.backtest,slippage_bps:Number(e.target.value)}})}/></label><label>{t('rp.capUsd')}<input required type="number" min="100" max="100000000" value={spec.backtest.capital} onChange={e=>setSpec({...spec,backtest:{...spec.backtest,capital:Number(e.target.value)}})}/></label><label>{t('rp.seed')}<input required type="number" min="0" max="2147483647" value={spec.seed} onChange={e=>setSpec({...spec,seed:Number(e.target.value)})}/></label></div><div className="inline-note">Test %{fmt((.85-spec.validation.train_ratio)*100)} · {t('rp.closedOpt')}</div></>}
-    {step===5&&<><div className="inline-note"><LockKeyhole size={17}/>{t('rp.lockNote')}</div><pre className="spec-review">{JSON.stringify(spec,null,2)}</pre></>}
+    {step===5&&<><div className="inline-note"><LockKeyhole size={17}/>{t('rp.lockNote')}</div><SpecReview spec={spec} datasets={datasets} models={models} families={families} spaces={spaces} goto={setStep}/></>}
     <div className="wizard-footer"><button type="button" className="secondary" disabled={step===0} onClick={()=>setStep(step-1)}>{t('rp.back')}</button><span>{step+1} / {steps.length}</span><button type="submit" className="primary" disabled={busy||!stepValid}>{step===5?(busy?t('rp.saving'):t('rp.saveDraft')):t('rp.next')}<ArrowRight size={14}/></button></div></form></dialog>
   </div>;
 }

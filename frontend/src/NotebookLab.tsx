@@ -119,17 +119,18 @@ export default function NotebookLab() {
 
   async function loadAll() {
     if (!wsId) return;
+    setError('');
     try {
-      const [nbs, ev, snaps] = await Promise.all([
-        request<Notebook[]>(`/workspaces/${wsId}/notebooks`),
-        request<Experiment[]>(`/experiments?workspace_id=${wsId}`),
-        request<Snapshot[]>(`/workspaces/${wsId}/snapshots`),
-      ]);
-      setNotebooks(nbs);
-      setExperiments(ev);
-      setSnapshots(snaps);
-      const e = await request<NbEnvironment[]>('/notebook-environments');
-      setEnvs(e);
+      setNotebooks(await request<Notebook[]>(`/workspaces/${wsId}/notebooks`));
+    } catch (e) { setError(String(e)); }
+    try {
+      setExperiments(await request<Experiment[]>(`/experiments?workspace_id=${wsId}`));
+    } catch (e) { setError(String(e)); }
+    try {
+      setSnapshots(await request<Snapshot[]>(`/workspaces/${wsId}/snapshots`));
+    } catch (e) { setError(String(e)); }
+    try {
+      setEnvs(await request<NbEnvironment[]>('/notebook-environments'));
     } catch (e) { setError(String(e)); }
   }
 
@@ -619,12 +620,18 @@ export default function NotebookLab() {
                 <option value="">{t('nb.uiNone')}</option>
                 {experiments.map(e => <option key={e.id} value={e.id}>{e.code} — {e.name}</option>)}
               </select>
+              {experiments.length === 0 && (
+                <small style={{ opacity: 0.65 }}>{t('nb.uiNoExperimentsInWorkspace')} <button type="button" className="text-button" onClick={loadAll}>{t('nb.uiRefresh')}</button></small>
+              )}
             </label>
             <label>{t('nb.uiDatasetSnapshotOptional')}
               <select value={runParams.dataset_snapshot_id} onChange={e => setRunParams(p => ({ ...p, dataset_snapshot_id: e.target.value }))}>
                 <option value="">{t('nb.uiNoneExploratoryMode')}</option>
-                {snapshots.map(s => <option key={s.id} value={s.id}>{s.details.name || s.id} ({s.id.slice(0, 8)})</option>)}
+                {snapshots.map(s => <option key={s.id} value={s.id}>{s.details.name || s.id} ({s.id.slice(0, 8)}){s.details.rows ? ` — ${s.details.rows}` : ''}</option>)}
               </select>
+              {snapshots.length === 0 && (
+                <small style={{ opacity: 0.65 }}>{t('nb.uiNoSnapshotsInWorkspace')} <button type="button" className="text-button" onClick={loadAll}>{t('nb.uiRefresh')}</button></small>
+              )}
             </label>
             <label>{t('nb.uiEnvironment')}
               <select value={runParams.environment_id} onChange={e => setRunParams(p => ({ ...p, environment_id: e.target.value }))}>

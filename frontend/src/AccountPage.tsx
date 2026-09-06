@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { LogOut, User, Mail, Lock, ShieldOff, KeyRound, Users, Archive, Globe2, Moon, Sun, AlertTriangle } from 'lucide-react';
-import { useAuth } from './auth';
+import { useAuth, getToken } from './auth';
 import { useLang } from './i18n';
 import { api } from './App';
 
@@ -26,6 +26,7 @@ type Session = {
   last_used: string;
   user_agent: string;
   active: boolean;
+  current?: boolean;
 };
 
 function StatCard({ label, value, sub = '', kind = '' }: { label: string; value: string | number; sub?: string; kind?: string }) {
@@ -72,12 +73,15 @@ export default function AccountPage() {
 
   async function load() {
     try {
-      const s = await api<AccountStats>('/auth/stats', { headers: { Authorization: `Bearer ${localStorage.getItem('regimelab.token')}` } });
+      const token = getToken();
+      if (!token) return;
+      const s = await api<AccountStats>('/auth/stats', { headers: { Authorization: `Bearer ${token}` } });
       setStats(s);
-      const sess = await api<{ sessions: Session[] }>('/auth/sessions', { headers: { Authorization: `Bearer ${localStorage.getItem('regimelab.token')}` } });
+      const sess = await api<{ sessions: Session[] }>('/auth/sessions', { headers: { Authorization: `Bearer ${token}` } });
       setSessions(sess.sessions);
     } catch {
-      // ignore
+      // Token revoked or expired server-side — force a clean re-login.
+      logout();
     }
   }
 
@@ -86,7 +90,7 @@ export default function AccountPage() {
     setError('');
     setNameSaving(true);
     try {
-      const token = localStorage.getItem('regimelab.token') ?? '';
+      const token = getToken() ?? '';
       const res = await fetch('/api/auth/me', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -108,7 +112,7 @@ export default function AccountPage() {
     setError('');
     setEmailSaving(true);
     try {
-      const token = localStorage.getItem('regimelab.token') ?? '';
+      const token = getToken() ?? '';
       const res = await fetch('/api/auth/email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -119,9 +123,9 @@ export default function AccountPage() {
         if (d.detail === 'Bu e-posta zaten kullanılıyor.' || d.detail === 'This email is already in use.') throw new Error(t('account.emailTakenError'));
         throw new Error(d.detail || t('account.success'));
       }
-      setError(t('account.success'));
-      setTimeout(()=>setError(''), 2500);
-      load();
+      // The server revokes every session on email change — re-login is required.
+      await logout();
+      window.location.href = '/';
     } catch (e) {
       setError((e as Error).message || t('account.success'));
       setTimeout(()=>setError(''), 2500);
@@ -137,7 +141,7 @@ export default function AccountPage() {
     setError('');
     setPasswordSaving(true);
     try {
-      const token = localStorage.getItem('regimelab.token') ?? '';
+      const token = getToken() ?? '';
       const res = await fetch('/api/auth/password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -148,8 +152,9 @@ export default function AccountPage() {
         if (d.detail === 'Eski şifre hatalı.' || d.detail === 'Current password is incorrect.') throw new Error(t('account.oldPasswordError'));
         throw new Error(d.detail || t('account.success'));
       }
-      setError(t('account.success'));
-      setTimeout(()=>{ setError(''); setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); }, 2500);
+      // The server revokes every session on password change — re-login is required.
+      await logout();
+      window.location.href = '/';
     } catch (e) {
       setError((e as Error).message || t('account.success'));
       setTimeout(()=>setError(''), 2500);
@@ -162,16 +167,15 @@ export default function AccountPage() {
     if (!confirm(t('account.revokeAllConfirm'))) return;
     setBusy(true);
     try {
-      const token = localStorage.getItem('regimelab.token') ?? '';
-      const res = await fetch('/api/auth/token/revoke', {
+      const token = getToken() ?? '';
+      const res = await fetch('/api/auth/token/revoke-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ token_id: '' }),
       });
       if (!res.ok) throw new Error(t('api.genericError'));
-      load();
-      setError(t('account.success'));
-      setTimeout(()=>setError(''), 2500);
+      // The current session is revoked too — a clean re-login is required.
+      await logout();
+      window.location.href = '/';
     } catch (e) {
       setError((e as Error).message || t('api.genericError'));
     } finally {
@@ -362,26 +366,33 @@ export default function AccountPage() {
                       <th>{t('account.sessionCreated')}</th>
                       <th>{t('account.sessionLastUsed')}</th>
                       <th>{t('account.sessionAgent')}</th>
+                      <th>{t('account.sessionStatus')}</th>
                       <th />
                     </tr>
                   </thead>
                   <tbody>
-                    {sessions.map(s => (
-                      <tr key={s.id}>
-                        <td>{fmtDate(s.issued_at)}</td>
-                        <td>{fmtDate(s.expires_at)}</td>
-                        <td><span className="session-agent" title={s.user_agent}>{s.user_agent.slice(0, 50)}{s.user_agent.length > 50 ? '…' : ''}</span></td>
-                        <td><button className="text-button session-revoke" disabled={busy} onClick={() => {
-                          fetch('/api/auth/token/revoke', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('regimelab.token')}` },
-                            body: JSON.stringify({ token_id: s.id }),
-                          }).then(r => { if (r.ok) return load(); });
-                        }}>
-                          {t('account.sessionSignOut')} <LogOut size={12} />
-                        </button></td>
-                      </tr>
-                    ))}
+                      {sessions.map(s => (
+                        <tr key={s.id}>
+                          <td>{fmtDate(s.issued_at)}</td>
+                          <td>{fmtDate(s.expires_at)}</td>
+                          <td><span className="session-agent" title={s.user_agent}>{s.user_agent.slice(0, 50)}{s.user_agent.length > 50 ? '…' : ''}</span></td>
+                          <td><span className={`badge ${s.active ? '' : 'amber'}`}>{s.current ? t('account.sessionCurrent') : s.active ? t('account.sessionActive') : t('account.sessionInactive')}</span></td>
+                          <td><button className="text-button session-revoke" disabled={busy} onClick={() => {
+                            fetch('/api/auth/token/revoke', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+                              body: JSON.stringify({ token_id: s.id }),
+                            }).then(r => {
+                              if (r.ok) {
+                                if (s.current) { logout(); window.location.href = '/'; return; }
+                                return load();
+                              }
+                            });
+                          }}>
+                            {t('account.sessionSignOut')} <LogOut size={12} />
+                          </button></td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>

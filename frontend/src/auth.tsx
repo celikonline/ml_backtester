@@ -1,10 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 
-export type AuthUser = { name: string; email: string; id: string };
+export type AuthUser = { name: string; email: string; id: string; role: string; session_id?: string };
 
 const TOKEN_KEY = 'regimelab.token';
 const SESSION_KEY = 'regimelab.session';
+
+export function getToken(): string | null {
+  return readToken();
+}
 
 function readToken(): string | null {
   try {
@@ -69,7 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       fetch(`${API_BASE}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.ok ? r.json() : null)
         .then(data => {
-          if (data) setUser({ name: data.name, email: data.email, id: data.id });
+          if (data) setUser({ name: data.name, email: data.email, id: data.id, role: data.role || 'user', session_id: data.session_id });
           else clearToken();
         })
         .catch(() => clearToken());
@@ -89,7 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const data = await res.json();
     writeToken(data.token, remember);
-    setUser({ name: data.name, email: data.email, id: data.id });
+    setUser({ name: data.name, email: data.email, id: data.id, role: data.role || 'user', session_id: data.session_id });
   }, []);
 
   const register = useCallback(async (name: string, email: string, password: string) => {
@@ -104,14 +108,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const data = await res.json();
     writeToken(data.token, true);
-    setUser({ name: data.name, email: data.email, id: data.id });
+    setUser({ name: data.name, email: data.email, id: data.id, role: data.role || 'user', session_id: data.session_id });
   }, []);
 
   const loginWithDemo = useCallback(async () => {
     await login(DEMO_USER.email, DEMO_USER.password, true);
   }, [login]);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    // Server-side session revoke first; the JWT must stop working everywhere.
+    const token = readToken();
+    if (token) {
+      try {
+        await fetch(`${API_BASE}/auth/logout`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        /* offline — still clear local state */
+      }
+    }
     clearToken();
     setUser(null);
   }, []);

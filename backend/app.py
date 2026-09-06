@@ -234,10 +234,12 @@ def project():
 
 DIST = ROOT / "frontend" / "dist"
 from .platform.api import router as experiment_router, domain_error, auth_router
+from .platform.quant_api import router as quant_router
 from .platform.schema import DomainError
 app.add_exception_handler(DomainError, domain_error)
 app.include_router(experiment_router(dataset, list_datasets))
 app.include_router(auth_router())
+app.include_router(quant_router)
 
 if DIST.exists():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")

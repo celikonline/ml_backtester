@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, Calendar, Check, ChevronDown, Circle, CircleHelp, Clock3, Database, FlaskConical, Layers3, LayoutDashboard, LayoutGrid, List, Loader2, LogOut, Moon, Play, Plus, Radio, Search, Settings2, Square, Sun, Tag, Terminal, Upload, X, Zap } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowRight, ArrowUpRight, BookOpen, Calendar, Check, ChevronDown, Circle, CircleHelp, Clock3, Database, FlaskConical, Layers3, LayoutDashboard, LayoutGrid, List, Loader2, LogOut, Moon, Play, Plus, Radio, Search, Settings2, Square, Sun, Tag, Terminal, Upload, User, X, Zap } from 'lucide-react';
 import { Area, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { Config, Dataset, Job, Result } from './types';
 import ResearchPlatform from './ResearchPlatform';
 import NotebookLab from './NotebookLab';
+import AccountPage from './AccountPage';
 import AuthPage from './AuthPage';
 import { useAuth } from './auth';
 import { useLang } from './i18n';
@@ -13,6 +14,87 @@ import { getStoredWorkspaceId } from './ws-store';
 import './workspace.css';
 
 const colors = ['#55dfb0','#8b91f3','#efb66c','#62b5ef','#e78fbe'];
+
+type CapabilityRow = { name: string; explanation: string; status: 'Var'|'Kısmen var'|'Yok'; plan: string };
+const capabilityTables: { title: string; rows: CapabilityRow[] }[] = [
+  { title: 'Veri yönetimi', rows: [
+    {name:'CSV veri yükleme', explanation:'OHLC, makro, FX, faiz ve cross-asset verilerini içeri alma.', status:'Var', plan:'Canlı veri bağlantıları'},
+    {name:'Point-in-time veri', explanation:'available_at alanıyla verinin kullanılabilirlik zamanını kontrol etme.', status:'Kısmen var', plan:'Vintage veri ve release takvimi'},
+    {name:'Snapshot ve SHA-256 hash', explanation:'Veri setinin değişmez kopyasını ve bütünlüğünü saklama.', status:'Var', plan:'Daha ayrıntılı veri lineage sistemi'},
+    {name:'Revision kontrolü', explanation:'Makro verilerin sonradan değiştirilip değiştirilmediğini izleme.', status:'Yok', plan:'ALFRED vintage entegrasyonu'},
+    {name:'Timezone / DST kontrolü', explanation:'Zaman damgalarını UTC’ye normalize etme.', status:'Kısmen var', plan:'Ayrıntılı timezone ve DST audit raporu'},
+  ]},
+  { title: 'Makro finans', rows: [
+    {name:'Makro indikatörler', explanation:'CPI, faiz, TGA ve benzeri harici serileri kullanma.', status:'Kısmen var', plan:'Daha geniş makro veri sağlayıcıları'},
+    {name:'FX ve rates kolonları', explanation:'fx__, rates__, macro__ ve cross_asset__ veri aileleri.', status:'Var', plan:'Otomatik veri keşfi'},
+    {name:'FX option IV surface', explanation:'Vade ve strike bazlı implied volatility yüzeyi.', status:'Yok', plan:'Opsiyon veri kaynağı ve surface modeli'},
+    {name:'Forward points / FX swaps', explanation:'Carry ve forward primi hesaplama.', status:'Yok', plan:'Forward ve swap eğrisi'},
+    {name:'OIS / cross-currency basis', explanation:'Faiz eğrisi ve para birimleri arası fonlama farkı.', status:'Yok', plan:'Eğri bootstrap sistemi'},
+    {name:'CFTC / dealer positioning', explanation:'Piyasa pozisyonlanmasını analiz etme.', status:'Yok', plan:'Positioning veri pipeline’ı'},
+    {name:'Order flow / microstructure', explanation:'Spread, imbalance ve işlem akışı özellikleri.', status:'Yok', plan:'Tick ve order-book veri katmanı'},
+  ]},
+  { title: 'Feature engineering', rows: [
+    {name:'Lag, delta ve return', explanation:'Harici serilerden gecikme, değişim ve getiri feature’ları üretme.', status:'Var', plan:'Daha geniş feature registry'},
+    {name:'Rolling istatistikler', explanation:'Rolling volatility, correlation, beta ve benzeri ölçümler.', status:'Kısmen var', plan:'Quantile, MAD, IQR, entropy ve skew'},
+    {name:'Nonlinear transformations', explanation:'Sigmoid, tanh, threshold ve spline dönüşümleri.', status:'Yok', plan:'Sürüm kontrollü transformer kütüphanesi'},
+    {name:'PCA / PLS / factor extraction', explanation:'Boyut indirgeme ve ortak faktör çıkarımı.', status:'Yok', plan:'Transformer modülleri'},
+    {name:'Fractional differentiation', explanation:'Serinin hafızasını koruyarak durağanlaştırma.', status:'Yok', plan:'Zaman serisi dönüşüm modülü'},
+  ]},
+  { title: 'Feature stability', rows: [
+    {name:'Information Coefficient', explanation:'Feature ile hedef arasındaki bilgi gücünü ölçme.', status:'Yok', plan:'Fold bazlı IC raporları'},
+    {name:'IC decay / sign consistency', explanation:'Feature performansının zaman içindeki kararlılığını ölçme.', status:'Yok', plan:'Otomatik stability raporu'},
+    {name:'Orthogonalization / residualization', explanation:'Tekrarlayan bilgiyi azaltma.', status:'Yok', plan:'Leakage kontrollü dönüşümler'},
+    {name:'Feature clustering / pruning', explanation:'Benzer ve gereksiz feature’ları eleme.', status:'Kısmen var', plan:'Stability selection'},
+    {name:'SHAP stability / ablation', explanation:'Feature katkısının rejimlere göre dayanıklılığını test etme.', status:'Yok', plan:'SHAP ve ablation artifact’ları'},
+  ]},
+  { title: 'Rejim analizi', rows: [
+    {name:'Gaussian HMM', explanation:'Piyasa rejimlerini istatistiksel olarak sınıflandırma.', status:'Var', plan:'Daha gelişmiş rejim modelleri'},
+  ]},
+  { title: 'Modelleme', rows: [
+    {name:'Ridge', explanation:'Trend uzmanı modeli.', status:'Var', plan:'Model kalibrasyonu'},
+    {name:'Random Forest', explanation:'Momentum uzmanı modeli.', status:'Var', plan:'Daha geniş hiperparametre araması'},
+    {name:'Histogram Gradient Boosting', explanation:'Volatilite uzmanı modeli.', status:'Var', plan:'Model çeşitliliğini artırma'},
+    {name:'XGBoost / LightGBM', explanation:'Gradient boosting tabanlı model seçenekleri.', status:'Var', plan:'Daha kapsamlı ensemble sistemi'},
+    {name:'Stacking / blending', explanation:'Birden fazla modeli üst modelle birleştirme.', status:'Kısmen var', plan:'Leakage kontrollü stacking'},
+  ]},
+  { title: 'Tahmin', rows: [
+    {name:'Quantile regression', explanation:'Tahmin aralıklarını üretme.', status:'Yok', plan:'Quantile model ailesi'},
+    {name:'Probability calibration', explanation:'Tahmin olasılıklarının güvenilirliğini ölçme.', status:'Yok', plan:'Calibration pipeline’ı'},
+    {name:'Conformal prediction', explanation:'Tahmin belirsizliğini istatistiksel olarak hesaplama.', status:'Yok', plan:'Conformal prediction modülü'},
+    {name:'Distributional forecasting', explanation:'Tek değer yerine tahmin dağılımı üretme.', status:'Yok', plan:'Rejim bazlı dağılımsal tahmin'},
+    {name:'Online / incremental learning', explanation:'Modeli yeni veriler geldikçe güncelleme.', status:'Yok', plan:'Concept-drift destekli online öğrenme'},
+  ]},
+  { title: 'Validasyon', rows: [
+    {name:'Walk-forward analysis', explanation:'Zaman sırasını koruyan ileriye dönük test.', status:'Var', plan:'Daha ayrıntılı fold raporları'},
+    {name:'Nested time-series CV', explanation:'Model seçimini iç ve dış zaman bölümlerinde yapma.', status:'Kısmen var', plan:'Tam nested model selection'},
+    {name:'Purged K-Fold / embargo', explanation:'Bilgi sızıntısını engelleyen gelişmiş CV.', status:'Yok', plan:'Purged splitter ve embargo'},
+    {name:'CPCV', explanation:'Combinatorial Purged Cross-Validation.', status:'Yok', plan:'CPCV modülü'},
+    {name:'Rolling / anchored retraining', explanation:'Modeli hareketli veya sabit başlangıçlı pencerelerde yenileme.', status:'Yok', plan:'Retraining policy'},
+  ]},
+  { title: 'Backtest', rows: [
+    {name:'Maliyet duyarlılığı', explanation:'Spread, komisyon ve işlem maliyetlerini hesaba katma.', status:'Var', plan:'Daha gerçekçi maliyet modelleri'},
+    {name:'Slippage / latency sensitivity', explanation:'Kayma ve gecikmenin sonuçlara etkisini test etme.', status:'Kısmen var', plan:'Ayrıntılı stres matrisi'},
+    {name:'Final holdout', explanation:'Model seçimi sonrası dokunulmamış final test.', status:'Var', plan:'Test governance geliştirmeleri'},
+  ]},
+  { title: 'Optimizasyon', rows: [
+    {name:'Genetic algorithm', explanation:'Feature, model ve sınırlı parametre seçimi.', status:'Var', plan:'Daha geniş arama alanı'},
+    {name:'Hyperparameter optimization', explanation:'Model parametrelerini optimize etme.', status:'Kısmen var', plan:'Nested HPO'},
+  ]},
+  { title: 'Risk ve sağlamlık', rows: [
+    {name:'Stress testing', explanation:'Farklı maliyet ve piyasa koşullarında dayanıklılık testi.', status:'Kısmen var', plan:'Sistematik stres senaryoları'},
+  ]},
+  { title: 'Açıklanabilirlik', rows: [
+    {name:'SHAP / permutation importance', explanation:'Feature katkılarını açıklama.', status:'Kısmen var', plan:'Açıklama kararlılığı analizi'},
+  ]},
+  { title: 'Deney yönetimi', rows: [
+    {name:'Experiment registry', explanation:'Deney konfigürasyonu, sonuçları ve loglarını saklama.', status:'Var', plan:'Daha kapsamlı artifact yönetimi'},
+    {name:'Workspace izolasyonu', explanation:'Kullanıcı ve deney alanlarını birbirinden ayırma.', status:'Var', plan:'Gelişmiş rol ve erişim yönetimi'},
+  ]},
+  { title: 'Notebook', rows: [
+    {name:'optimusprime.ipynb desteği', explanation:'Teknik indikatör, DL ve backtest çalışmalarını referans alma.', status:'Kısmen var', plan:'Notebook çalıştırma ve migration'},
+    {name:'tezmodelfinal (1).ipynb desteği', explanation:'Makro indikatörler, FX verileri, HMM ve ensemble yaklaşımı.', status:'Kısmen var', plan:'Parametreli notebook pipeline’ı'},
+  ]},
+];
 
 function statusLabelFor(status: string, lang: Lang): string {
   const map: Record<string, Record<Lang, string>> = {
@@ -78,7 +160,7 @@ function App(){
   const [showProfile, setShowProfile] = useState(false);
   const [project,setProject]=useState<{notebooks:{name:string;cells:number}[];scope:string}|null>(null);
   const [config,setConfig]=useState<Config>({dataset_id:'demo',interval:'native',train_ratio:0.65,states:3,cost_bps:0.5,capital:10000});
-  const uploadRef=useRef<HTMLInputElement>(null),dialogRef=useRef<HTMLDialogElement>(null),workspaceDialogRef=useRef<HTMLDialogElement>(null);
+  const uploadRef=useRef<HTMLInputElement>(null),dialogRef=useRef<HTMLDialogElement>(null),workspaceDialogRef=useRef<HTMLDialogElement>(null),profileMenuRef=useRef<HTMLDivElement>(null);
   const result=job?.result,active=!!job&&['running','queued'].includes(job.status);
   const selected=datasets.find(d=>d.id===config.dataset_id)||datasets[0];
   const filteredDatasets=datasets.filter(d=>{
@@ -107,6 +189,25 @@ function App(){
   useEffect(()=>{const d=dialogRef.current;if(modal&&!d?.open)d?.showModal();if(!modal&&d?.open)d.close();},[modal]);
   useEffect(()=>{const d=workspaceDialogRef.current;if(workspaceModal&&!d?.open)d?.showModal();if(!workspaceModal&&d?.open)d.close();},[workspaceModal]);
   useEffect(()=>{
+    if(!showProfile)return;
+    function handleClickOutside(event:MouseEvent){
+      if(profileMenuRef.current&&!profileMenuRef.current.contains(event.target as Node)){
+        setShowProfile(false);
+      }
+    }
+    function handleKeyDown(event:KeyboardEvent){
+      if(event.key==='Escape'){
+        setShowProfile(false);
+      }
+    }
+    document.addEventListener('mousedown',handleClickOutside);
+    document.addEventListener('keydown',handleKeyDown);
+    return()=>{
+      document.removeEventListener('mousedown',handleClickOutside);
+      document.removeEventListener('keydown',handleKeyDown);
+    };
+  },[showProfile]);
+  useEffect(()=>{
     document.documentElement.dataset.theme=theme;
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content',theme==='light'?'#f7f9fc':'#0c1017');
     localStorage.setItem('regimelab.theme',theme);
@@ -118,7 +219,7 @@ function App(){
   async function createAndSwitch(){const name=newWsName.trim();if(!name)return;setError('');try{await createWorkspace(name.slice(0,120),newWsMarket.trim().slice(0,16));setNewWsName('');setWorkspaceModal(false);}catch(e){setError((e as Error).message);}}
   async function archiveAndRefresh(id:string){if(!window.confirm(t('ws.confirmArchive')))return;setError('');try{await archiveWorkspace(id);}catch(e){setError((e as Error).message);}}
   const nav=[['platform',t('nav.platform'),FlaskConical],['overview',t('nav.overview'),LayoutDashboard],['data',t('nav.data'),Database],['models',t('nav.models'),Layers3],['regimes',t('nav.regimes'),Activity],['notebook','Notebook Lab',BookOpen],['history',t('nav.history'),Clock3]] as const;
-  const heading:Record<string,string>={platform:t('heading.platform'),overview:t('heading.overview'),data:t('heading.data'),models:t('heading.models'),regimes:t('heading.regimes'),history:t('heading.history'),method:t('heading.method'),notebook:'Notebook Lab'};
+  const heading:Record<string,string>={platform:t('heading.platform'),overview:t('heading.overview'),data:t('heading.data'),models:t('heading.models'),regimes:t('heading.regimes'),history:t('heading.history'),method:t('heading.method'),notebook:'Notebook Lab',account:t('nav.account')};
   if(!authReady)return <div className="auth-loading"><Loader2 size={26} className="spin"/></div>;
   if(!authUser)return <AuthPage/>;
   return <div className="app-shell">
@@ -128,23 +229,118 @@ function App(){
       <span className="nav-label">{t('workspace.label')}</span>
       <nav>{nav.map(([id,label,Icon])=><button key={id} className={page===id?'nav-item selected':'nav-item'} onClick={()=>setPage(id)}><Icon size={18}/>{label}{id==='overview'&&<span className="nav-dot"/>}</button>)}</nav>
       <div className="sidebar-note"><div className="tiny-icon"><FlaskConical size={17}/></div><strong>{t('sidebar.tagline')}</strong><p>{t('sidebar.taglineSub')}</p><button onClick={()=>setPage('method')}>{t('sidebar.structure')} <ArrowUpRight size={14}/></button></div>
-      <div className="sidebar-bottom"><button className={`nav-item ${page==='method'?'selected':''}`} onClick={()=>setPage('method')}><BookOpen size={18}/>{t('nav.method')}</button><div className="user-wrapper" onClick={()=>setShowProfile(!showProfile)}><span>{(authUser.name||authUser.email||'Q').trim().charAt(0).toUpperCase()}</span><div className="user-meta"><b title={authUser.name}>{authUser.name}</b><small title={authUser.email}>{authUser.email}</small></div></div>
-      {showProfile && (
-        <div className="profile-menu" style={{position:'absolute',right:12,top:72,background:'white',border:'1px solid #ccc',padding:'8px 12px',borderRadius:4,minWidth:'140px',fontSize:12,zIndex:1000}}>
-          <div>{authUser.name || authUser.email || ''}</div>
-          <div style={{fontSize:11,color:'#666',marginTop:'4px'}}>{authUser.email || ''}</div>
-          <hr style={{margin:'8px 0'}}/>
-          <button type="button" className="user-logout" style={{width:'100%',textAlign:'left',background:'none',border:'none',fontSize:12,cursor:'pointer'}} onClick={()=>{logout();setShowProfile(false);}} title={t('auth.logout')} aria-label={t('auth.logout')}> {t('auth.logout')}</button>
-        </div>
-      )}</div>
+      <div className="sidebar-bottom">
+        <button className={`nav-item ${page==='method'?'selected':''}`} onClick={()=>setPage('method')}><BookOpen size={18}/>{t('nav.method')}</button>
+      </div>
     </aside>
-    <div className="main-shell"><header className="topbar"><div className="breadcrumb">{t('topbar.workspace')} <span>/</span><b>{heading[page]}</b></div><div className="topbar-right"><span className={online?'connection':'connection offline'}><i/>{online?t('topbar.online'):t('topbar.offline')}</span><span className="local-label">LOCAL</span><LangSwitch/><button className="icon-button theme-toggle" title={theme==='dark'?t('topbar.light'):t('topbar.dark')} aria-label={theme==='dark'?t('topbar.light'):t('topbar.dark')} onClick={()=>setTheme(current=>current==='dark'?'light':'dark')}>{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button><button className="icon-button" title={t('topbar.methodology')} aria-label={t('topbar.openMethodology')} onClick={()=>setPage('method')}><CircleHelp size={18}/></button></div></header>
+    <div className="main-shell">
+      <header className="topbar">
+        <div className="breadcrumb">{t('topbar.workspace')} <span>/</span><b>{heading[page]}</b></div>
+        <div className="topbar-right">
+          <span className={online?'connection':'connection offline'}><i/>{online?t('topbar.online'):t('topbar.offline')}</span>
+          <span className="local-label">LOCAL</span>
+          <LangSwitch/>
+          <button className="icon-button theme-toggle" title={theme==='dark'?t('topbar.light'):t('topbar.dark')} aria-label={theme==='dark'?t('topbar.light'):t('topbar.dark')} onClick={()=>setTheme(current=>current==='dark'?'light':'dark')}>{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button>
+          <button className="icon-button" title={t('topbar.methodology')} aria-label={t('topbar.openMethodology')} onClick={()=>setPage('method')}><CircleHelp size={18}/></button>
+
+          <div className="topbar-separator"/>
+
+          <div className="profile-menu-container" ref={profileMenuRef}>
+            <button
+              type="button"
+              className={`profile-trigger ${showProfile?'active':''}`}
+              onClick={()=>setShowProfile(prev=>!prev)}
+              aria-expanded={showProfile}
+              aria-haspopup="true"
+              title={authUser.name||authUser.email}
+            >
+              <span className="profile-avatar">
+                {(authUser.name||authUser.email||'Q').trim().charAt(0).toUpperCase()}
+              </span>
+              <div className="profile-trigger-info hide-small">
+                <span className="profile-trigger-name">{authUser.name||authUser.email?.split('@')[0]}</span>
+                <span className="profile-trigger-role">{authUser.role||'Quant'}</span>
+              </div>
+              <ChevronDown size={14} className={`profile-chevron ${showProfile?'rotated':''}`}/>
+            </button>
+
+            {showProfile && (
+              <div className="profile-dropdown-menu" role="menu">
+                <div className="profile-dropdown-header">
+                  <div className="profile-dropdown-avatar">
+                    {(authUser.name||authUser.email||'Q').trim().charAt(0).toUpperCase()}
+                  </div>
+                  <div className="profile-dropdown-user-info">
+                    <b className="profile-dropdown-name" title={authUser.name||authUser.email}>
+                      {authUser.name || 'User'}
+                    </b>
+                    <small className="profile-dropdown-email" title={authUser.email}>
+                      {authUser.email}
+                    </small>
+                    <div className="profile-dropdown-badges">
+                      <span className="profile-badge-role">{authUser.role || 'Quant Trader'}</span>
+                      {workspace && <span className="profile-badge-ws">{workspace.code}</span>}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="profile-dropdown-divider"/>
+
+                <div className="profile-dropdown-list">
+                  <button
+                    type="button"
+                    className="profile-dropdown-item"
+                    role="menuitem"
+                    onClick={()=>{setPage('account');setShowProfile(false);}}
+                  >
+                    <User size={15}/>
+                    <span>{t('profile.viewAccount')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="profile-dropdown-item"
+                    role="menuitem"
+                    onClick={()=>{setWorkspaceModal(true);setShowProfile(false);}}
+                  >
+                    <Layers3 size={15}/>
+                    <span>{t('profile.switchWs')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="profile-dropdown-item"
+                    role="menuitem"
+                    onClick={()=>{setPage('notebook');setShowProfile(false);}}
+                  >
+                    <BookOpen size={15}/>
+                    <span>{t('profile.notebookLab')}</span>
+                  </button>
+                </div>
+
+                <div className="profile-dropdown-divider"/>
+
+                <div className="profile-dropdown-list">
+                  <button
+                    type="button"
+                    className="profile-dropdown-item danger"
+                    role="menuitem"
+                    onClick={()=>{logout();setShowProfile(false);}}
+                  >
+                    <LogOut size={15}/>
+                    <span>{t('profile.logout')}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
     <main>
       <div className="page-heading"><div><div className="eyebrow">EUR/USD <span>·</span> {lang==='en'?'REGIME-AWARE MODELING':'REJİM ODAKLI MODELLEME'}</div><h1>{page==='overview'?t('hero.title'):heading[page]}</h1><p>{page==='overview'?t('hero.subOverview'):t('hero.subOther')}</p></div><button className="primary" onClick={()=>{setError('');if(page==='platform')setPlatformNew(n=>n+1);else setModal(true);}} disabled={page!=='platform'&&active}><Plus size={17}/>{t('action.newExperiment')}</button></div>
       {error&&<div className="alert" role="alert"><span>{error}</span><button aria-label={t('alert.closeError')} onClick={()=>setError('')}><X size={16}/></button></div>}
       <input ref={uploadRef} type="file" accept=".csv,text/csv" hidden onChange={e=>upload(e.target.files?.[0])}/>
       {page==='platform'&&<ResearchPlatform newRequest={platformNew}/>}
       {page==='notebook'&&<NotebookLab/>}
+      {page==='account'&&<AccountPage/>}
       {page==='overview'&&<>
         <div className="dataset-strip"><div className="pair-icon">€<span>$</span></div><div className="pair-title"><strong>EUR / USD</strong><span>{t('pair.quote')}</span></div><span className="divider"/><div className="strip-detail"><small>{t('strip.source')}</small><b>{job?job.dataset_name:selected?.name||t('strip.loading')}</b></div><div className="strip-detail hide-small"><small>{t('strip.experiment')}</small><b>{job?`#${job.id.slice(0,8)}`:t('strip.notStarted')}</b></div><span className={`badge ${job?.demo??selected?.demo?'amber':''}`}>{(job?.demo??selected?.demo)?t('strip.synthetic'):t('strip.uploaded')}</span></div>
         <div className="metrics-grid">{[
@@ -164,7 +360,7 @@ function App(){
       {page==='models'&&(result?<><div className="expert-grid">{result.experts.map((expert,i)=><section className="panel expert-card" key={expert.name}><span className="expert-icon" style={{color:colors[i],background:`${colors[i]}15`}}><Layers3 size={24}/></span><span className="eyebrow">{t('models.expert')} 0{i+1}</span><h2>{expert.name}</h2><p>{expert.family}</p><div className="expert-stat"><b>{expert.features.length}</b><span>{t('models.techFeat')}</span></div><div className="feature-tags">{expert.features.map(f=><span key={f}>{f}</span>)}</div></section>)}</div><section className="panel spacing-top"><div className="panel-heading"><div><h2>{t('models.results')}</h2><p>{t('models.resultsSub')}</p></div></div><Comparison result={result}/></section></>:<Empty onStart={()=>setModal(true)} title={t('models.emptyTitle')} text={t('models.emptyText')}/>)}
       {page==='regimes'&&(result?<><div className="regime-cards">{result.regimes.map(r=><section className="panel regime-card" key={r.id}><span className="badge" style={{color:colors[r.id]}}>{t('regimes.stateBadge')} {r.id}</span><h2>{fmt(r.share*100,1)}<small>%</small></h2><p>{fmt(r.bars,0)} {t('regimes.testBars')}</p><div className="regime-stat"><span>{t('regimes.persistence')}</span><b>{fmt(r.persistence*100,1)}%</b></div><div className="regime-stat"><span>{t('regimes.meanRet')}</span><b>{fmt(r.mean_return_bps)} bp</b></div><h3>{t('regimes.weights')}</h3>{r.weights.map((w,i)=><div className="weight-row" key={i}><div><span>{result.experts[i].name}</span><b>{fmt(w*100,1)}%</b></div><div className="weight-track"><span style={{width:`${w*100}%`,background:colors[i]}}/></div></div>)}</section>)}</div><section className="panel spacing-top"><div className="panel-heading"><div><h2>{t('regimes.matrix')}</h2><p>{t('regimes.matrixSub')}</p></div></div><div className="table-wrap"><table className="transition-table"><thead><tr><th>{t('regimes.transition')}</th>{result.regimes.map(r=><th key={r.id}>S{r.id}</th>)}</tr></thead><tbody>{result.transition.map((row,i)=><tr key={i}><th>S{i}</th>{row.map((v,j)=><td key={j} style={{background:`rgba(85,223,176,${v*.23})`}}>{fmt(v*100,1)}%</td>)}</tr>)}</tbody></table></div></section><p className="footnote">{t('regimes.note')}</p></>:<Empty onStart={()=>setModal(true)} title={t('regimes.emptyTitle')} text={t('regimes.emptyText')}/>)}
       {page==='history'&&<HistoryCatalog history={history} filtered={histFiltered} datasets={histDatasets} query={histQuery} setQuery={setHistQuery} status={histStatus} setStatus={setHistStatus} dataset={histDataset} setDataset={setHistDataset} view={histView} setView={setHistView} active={active} jobId={job?.id} onOpen={openRun} onNew={()=>setModal(true)} />}
-      {page==='method'&&<div className="method-layout"><section className="panel prose"><span className="eyebrow">{t('method.kicker')}</span><h2>{t('method.title')}</h2><p>{t('method.intro')}</p><h3>{t('method.notebooks')}</h3>{project?.notebooks.map(n=><div className="notebook" key={n.name}><BookOpen size={20}/><div><b>{n.name}</b><p>{n.name.startsWith('optimus')?t('method.nbOptimus'):t('method.nbTez')}</p></div><span>{n.cells} {t('method.cells')}</span></div>)}<h3>{t('method.flow')}</h3><p>{project?.scope}</p><ol>{(result?.notes||[t('method.note1'),t('method.note2'),t('method.note3'),t('method.note4'),t('method.note5')]).map(n=><li key={n}>{n}</li>)}</ol><h3>{t('method.findings')}</h3><p>{t('method.findingsText')}</p><p>{t('method.sharpe')}</p><div className="inline-note">{t('method.synthetic')}</div></section><section className="panel method-side"><h2>{t('method.protocol')}</h2><div><small>{t('method.goal')}</small><b>{t('method.goalV')}</b></div><div><small>{t('method.val')}</small><b>{t('method.valV')}</b></div><div><small>{t('method.gap')}</small><b>{t('method.gapV')}</b></div><div><small>{t('method.regime')}</small><b>{t('method.regimeV')}</b></div><div><small>{t('method.seed')}</small><b>42</b></div><div><small>{t('method.cost')}</small><b>{t('method.costV')}</b></div></section></div>}
+      {page==='method'&&<div className="method-layout"><section className="panel prose"><span className="eyebrow">{t('method.kicker')}</span><h2>{t('method.title')}</h2><p>{t('method.intro')}</p><h3>{t('method.notebooks')}</h3>{project?.notebooks.map(n=><div className="notebook" key={n.name}><BookOpen size={20}/><div><b>{n.name}</b><p>{n.name.startsWith('optimus')?t('method.nbOptimus'):t('method.nbTez')}</p></div><span>{n.cells} {t('method.cells')}</span></div>)}<h3>{t('method.flow')}</h3><p>{project?.scope}</p><ol>{(result?.notes||[t('method.note1'),t('method.note2'),t('method.note3'),t('method.note4'),t('method.note5')]).map(n=><li key={n}>{n}</li>)}</ol><h3>{t('method.findings')}</h3><p>{t('method.findingsText')}</p><p>{t('method.sharpe')}</p><div className="inline-note">{t('method.synthetic')}</div></section><section className="panel method-side"><h2>{t('method.protocol')}</h2><div><small>{t('method.goal')}</small><b>{t('method.goalV')}</b></div><div><small>{t('method.val')}</small><b>{t('method.valV')}</b></div><div><small>{t('method.gap')}</small><b>{t('method.gapV')}</b></div><div><small>{t('method.regime')}</small><b>{t('method.regimeV')}</b></div><div><small>{t('method.seed')}</small><b>42</b></div><div><small>{t('method.cost')}</small><b>{t('method.costV')}</b></div></section><section className="panel capability-panel"><h2>Özellik kapsamı ve gelecek planı</h2><p className="table-note">Durumlar mevcut kod ve veri sözleşmesine göre işaretlenmiştir. “Kısmen var”, temel mekanizmanın bulunduğunu ancak üretim seviyesinde tam kapsama ulaşmadığını belirtir.</p>{capabilityTables.map(table=><div className="capability-group" key={table.title}><h3>{table.title}</h3><div className="capability-table-wrap"><table className="capability-table"><thead><tr><th>Özellik</th><th>Açıklama</th><th>Durum</th><th>Gelecek planı</th></tr></thead><tbody>{table.rows.map(row=><tr key={row.name}><td><b>{row.name}</b></td><td>{row.explanation}</td><td><span className={`cap-status ${row.status.replace(' ','-').toLowerCase()}`}>{row.status}</span></td><td>{row.plan}</td></tr>)}</tbody></table></div></div>)}<p className="table-note">{t('cap.summary')}</p></section></div>}
       <footer className="footer"><span><Activity size={13}/>REGIME LAB <i/> {t('footer.built')}</span><span>{t('footer.local')}</span></footer>
     </main></div>
     <dialog ref={workspaceDialogRef} onCancel={()=>setWorkspaceModal(false)} onClick={e=>{if(e.target===workspaceDialogRef.current)setWorkspaceModal(false);}}><div><div className="dialog-heading"><span className="workspace-icon">FX</span><button type="button" className="icon-button" aria-label={t('ws.close')} onClick={()=>setWorkspaceModal(false)}><X size={20}/></button></div><h2>{t('ws.switchTitle')}</h2><p className="dialog-description">{t('ws.switchDesc')}</p>{wsError&&<div className="alert" role="alert">{wsError}</div>}<div className="workspace-list">{workspaces.map(w=><div key={w.id} className={w.id===workspace?.id?'workspace-row current':'workspace-row'}><button type="button" onClick={()=>switchAndReload(w.id)} disabled={w.id===workspace?.id}><b>{w.name}</b><small>{w.code} · {w.experiment_count} {t('ws.experiments')} · {w.dataset_count} {t('ws.datasets')}{w.id===workspace?.id?` · ${t('ws.current')}`:''}</small></button>{w.code!=='WS-DEFAULT'&&<button type="button" className="text-button" onClick={()=>archiveAndRefresh(w.id)}>{t('ws.archive')}</button>}</div>)}</div><form onSubmit={e=>{e.preventDefault();createAndSwitch();}}><div className="form-grid"><label>{t('ws.newName')}<input required maxLength={120} value={newWsName} onChange={e=>setNewWsName(e.target.value)}/></label><label>{t('ws.market')}<input maxLength={16} value={newWsMarket} onChange={e=>setNewWsMarket(e.target.value)}/></label></div><button className="primary full-width" type="submit"><Plus size={16}/>{t('ws.create')}</button></form></div></dialog>
