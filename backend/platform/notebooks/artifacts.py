@@ -37,7 +37,7 @@ def collect_artifacts(artifact_dir: Path) -> list[dict]:
         return artifacts
 
     for path in sorted(artifact_dir.rglob("*")):
-        if not path.is_file():
+        if not path.is_file() or not path.resolve().is_relative_to(artifact_dir.resolve()):
             continue
         # Skip internal files
         if path.name in {"nb_params.json"}:

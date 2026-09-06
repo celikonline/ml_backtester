@@ -25,6 +25,83 @@ from backend.app import app
 import regimelab_sdk
 
 
+def test_snapshot_version_run_download_flow(tmp_path):
+    from backend.platform.api import nb_service
+    from backend.platform.db import snapshots
+    import hashlib
+
+    db_url = "sqlite:///" + (tmp_path / "registry.sqlite3").as_posix()
+    storage = tmp_path / "storage"
+    exp = ExperimentService(url=db_url, storage=storage)
+    ws = exp.ensure_default_workspace()["id"]
+    other = exp.create_workspace({"name": "Other workspace"}, {"id": "test"})["id"]
+    svc = NotebookService(url=db_url, storage=storage)
+    csv = b"date,value\n2026-01-01,42\n"
+    (storage / "sample.csv").write_bytes(csv)
+    with svc.engine.begin() as con:
+        for snapshot_id, workspace in [("snapshot-one", ws), ("snapshot-other", other)]:
+            con.execute(snapshots.insert().values(
+                id=snapshot_id, workspace_id=workspace, sha256=hashlib.sha256(csv).hexdigest(),
+                path="sample.csv", details={"name": "Sample dataset", "rows": 1}, created_at="2026-09-06T00:00:00Z",
+            ))
+    app.dependency_overrides[nb_service] = lambda: svc
+    try:
+        with TestClient(app) as client:
+            base = f"/api/v1/workspaces/{ws}"
+            listed = client.get(base + "/snapshots")
+            assert listed.status_code == 200
+            assert [s["id"] for s in listed.json()] == ["snapshot-one"]
+            assert "path" not in listed.json()[0]
+            nb = json.loads(_make_sample_notebook())
+            nb["cells"][-1]["source"] = [
+                "from pathlib import Path\n",
+                "assert DATASET_SNAPSHOT_ID == 'snapshot-one'\n",
+                "assert '42' in (Path(INPUT_DIR) / 'dataset.csv').read_text()\n",
+                "(Path(ARTIFACT_DIR) / 'nested').mkdir(exist_ok=True)\n",
+                "(Path(ARTIFACT_DIR) / 'nested' / 'result.txt').write_text('snapshot verified')\n",
+            ]
+            raw = json.dumps(nb).encode()
+            upload = client.post(base + "/notebooks", files={"file": ("sample.ipynb", raw)})
+            assert upload.status_code == 201
+            notebook_id = upload.json()["id"]
+            version = client.post(base + f"/notebooks/{notebook_id}/versions", files={"file": ("v2.ipynb", raw + b"\n")}, params={"change_summary": "Snapshot verification"})
+            assert version.status_code == 201
+            assert version.json()["version"] == 2
+            invalid = client.post(base + "/notebook-runs", json={"notebook_id": notebook_id, "dataset_snapshot_id": "snapshot-other"})
+            assert invalid.status_code == 404
+            created = client.post(base + "/notebook-runs", json={"notebook_id": notebook_id, "dataset_snapshot_id": listed.json()[0]["id"]})
+            assert created.status_code == 202
+            run_id = created.json()["id"]
+            run_url = base + f"/notebook-runs/{run_id}"
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                run = client.get(run_url).json()
+                if run["status"] in {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"}:
+                    break
+                time.sleep(.1)
+            assert run["status"] == "COMPLETED", run.get("error_message")
+            events = client.get(run_url + "/events")
+            assert "notebook.run.completed" in events.text
+            assert "event: done" in events.text
+            download = client.get(run_url + "/artifacts/nested/result.txt")
+            assert download.status_code == 200
+            assert download.text == "snapshot verified"
+            assert "attachment" in download.headers["content-disposition"]
+            executed = client.get(run_url + "/artifacts/executed.ipynb")
+            assert executed.status_code == 200
+            assert executed.json()["cells"][-1]["execution_count"] is not None
+            for name in ["missing.txt", "..%2Fexecuted.ipynb", "..%5Cexecuted.ipynb"]:
+                assert client.get(run_url + "/artifacts/" + name).status_code == 404
+            foreign_url = f"/api/v1/workspaces/{other}/notebook-runs/{run_id}"
+            for suffix in ["", "/artifacts", "/artifacts/executed.ipynb", "/logs", "/metrics", "/events"]:
+                assert client.get(foreign_url + suffix).status_code == 404
+    finally:
+        app.dependency_overrides.pop(nb_service, None)
+        svc.close()
+        svc.engine.dispose()
+        exp.engine.dispose()
+
+
 def _make_sample_notebook(has_params: bool = True, has_pip: bool = False, has_secret: bool = False) -> bytes:
     cells = []
     if has_pip:
@@ -157,11 +234,12 @@ def test_artifact_collector(tmp_path):
 
 def test_notebook_service_lifecycle(tmp_path):
     storage = tmp_path / "storage"
-    exp_svc = ExperimentService(storage=storage)
+    db_url = "sqlite:///" + (tmp_path / "registry.sqlite3").as_posix()
+    exp_svc = ExperimentService(url=db_url, storage=storage)
     ws = exp_svc.ensure_default_workspace()
     ws_id = ws["id"]
 
-    svc = NotebookService(storage=storage)
+    svc = NotebookService(url=db_url, storage=storage)
 
     # 1. Set secret
     sec = svc.set_secret(ws_id, "FRED_API_KEY", "fred-key-12345", "FRED API key", {"id": "test-user"})

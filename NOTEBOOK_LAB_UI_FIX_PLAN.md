@@ -2,6 +2,24 @@
 
 Tarih: 2026-09-06
 
+## Uygulama durumu — 2026-09-06
+
+Kod değişiklikleri tamamlandı. Aşağıdaki bulgular ilk incelemenin tarihsel kaydıdır; güncel durum:
+
+- [x] Faz 0: Mevcut `notebook.css` ve import doğrulandı; durum tokenları `style.css` içine taşındı. Inspection banner'ları, dialog boyutları, log sarma ve tablo taşması düzenlendi. Açık/koyu tema ve seçili satır stilleri mevcut.
+- [x] Faz 1: Workspace kapsamlı snapshot endpoint'i eklendi; UI gerçek snapshot ID ve `details.name` kullanıyor. Snapshot seçmeden çalıştırma korundu.
+- [x] Faz 2: Workspace ve dosya yolu kontrolüyle artifact/`executed.ipynb` indirme eklendi. Alt klasörlerdeki artifact'ler destekleniyor; dışarıya işaret eden symlink'ler listelenmiyor. Genel Bakış'tan Yeni Versiyon yüklenebiliyor.
+- [x] Faz 3: Inspection kodu ve ayrıntısı warning/critical renkleriyle gösteriliyor. Sabit UI metinleri TR/EN sözlüğüne taşındı. Sıfır saniye gösterimi, SSE GET başlıkları, event payload gösterimi, JSON nesne kontrolü ve Artifacts sekmesindeki çalıştırma seçimi düzeltildi. Workspace/notebook değişiminde eski seçimler temizleniyor.
+- [x] Faz 4: `npx tsc -b` ve `npm run build` başarılı. `pytest tests/test_notebooks.py -q`: **9 geçti**. Testler geçici veritabanı/depolama ile çalıştırıldı.
+- [x] Otomatik uçtan uca REST testi: upload → yeni versiyon → snapshot ile gerçek notebook execution → SSE → nested artifact ve executed notebook indirme. Yanlış workspace, eksik dosya ve path traversal için 404 doğrulandı.
+- [ ] Görsel/manual tarayıcı kontrolü: Oturumda kullanılabilir tarayıcı bulunmadığından gerçekleştirilemedi. Açık/koyu tema, dar ekran ve dosya seçicilerinin görsel kontrolü bekliyor; otomatik API doğrulaması bunun yerine görsel doğrulama sayılmadı.
+
+Doğrulamayı engelleyen mevcut çalışma alanı hatalarına da küçük düzeltmeler yapıldı: `i18n.tsx` içindeki yinelenmiş/yarım tanımlar, `ResearchPlatform.tsx` içindeki çift state tanımları ve activity response tipi, `AccountPage.tsx` icon/Promise kullanımı ve `App.tsx` API helper export'u. `auth_utils.py` içinde import sırasında çöken rastgele hex → decimal süre dönüşümü 24 saatlik JWT süresiyle değiştirildi. Önceden var olan diğer değişiklikler korundu.
+
+Notebook upload sonrası görünen `405 Method Not Allowed` için eksik `GET /api/v1/experiments` liste endpoint'i eklendi. Upload isteği aslında başarılı olduğu halde bu takip isteği hatayı genel upload banner'ında gösteriyordu.
+
+---
+
 Bu doküman, `frontend/src/NotebookLab.tsx` sayfasının backend (`api.py`, `backend/platform/notebooks/*`) ve stil katmanıyla birlikte gözden geçirilmesinden çıkan bulguları ve öncelikli düzeltme planını içerir.
 
 Kapsam:

@@ -147,16 +147,20 @@ class ExperimentService:
             return {"id": budget["id"], "workspace_id": budget.get("workspace_id"),
                     "usage": self._budget_usage(con, budget["id"]), "limits": merged}
 
-    def ledger(self, limit=200, workspace_id=None):
+    def ledger(self, page=1, page_size=50, workspace_id=None):
         with self.engine.connect() as con:
-            stmt = select(research_trial_events).order_by(research_trial_events.c.id.desc()).limit(max(1, min(limit, 500))).offset(0)
+            total = con.execute(select(func.count()).select_from(research_trial_events)).scalar()
+        offset = (page - 1) * page_size
+        with self.engine.connect() as con:
+            stmt = select(research_trial_events).order_by(research_trial_events.c.id.desc()).limit(max(1, min(page_size, 500))).offset(offset)
             ws = workspace_id or workspace_scope.get()
             if ws:
                 row = con.execute(select(workspaces.c.id).where((workspaces.c.id == ws) | (workspaces.c.code == ws))).first()
                 if not row: raise DomainError("Workspace bulunamadı.", 404, "not_found")
                 budget = con.execute(select(research_budgets.c.id).where(research_budgets.c.workspace_id == row[0])).first()
                 stmt = stmt.where(research_trial_events.c.budget_id == (budget[0] if budget else "__none__"))
-            return [dict(row) for row in con.execute(stmt).mappings()]
+            rows = con.execute(stmt).mappings().all()
+        return {"page": page, "page_size": page_size, "total": total or 0, "items": [dict(r) for r in rows]}
 
     def estimate(self, spec, snapshot_id=None, workspace_id=None):
         spec = ExperimentSpec.model_validate(spec)

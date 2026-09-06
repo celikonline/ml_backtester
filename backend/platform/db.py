@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from sqlalchemy import JSON, Boolean, Column, Float, ForeignKey, Index, Integer, MetaData, String, Table, Text, UniqueConstraint, create_engine, event
+from sqlalchemy import JSON, Boolean, Column, Float, ForeignKey, Index, Integer, MetaData, PrimaryKeyConstraint, String, Table, Text, UniqueConstraint, create_engine, event
 
 ROOT = Path(__file__).resolve().parents[2]
 STORAGE = Path(os.environ.get("REGIMELAB_STORAGE", ROOT / "data" / "platform")).resolve()

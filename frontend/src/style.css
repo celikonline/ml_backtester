@@ -83,6 +83,17 @@
 .hist-learn{margin-top:20px;background:none;border:0;padding:0;color:#3ba3dd;font-size:15px;display:inline-flex;align-items:center;gap:5px;width:fit-content}
 .hist-learn:hover{color:#5bbbf0;text-decoration:underline}
 .hist-learn:disabled{opacity:.45;text-decoration:none}
+.dataset-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.dataset-card{min-height:310px}
+.dataset-card .hist-wordmark{display:flex;align-items:center;color:var(--green)}
+.dataset-card.dataset-selected{border-color:var(--green);box-shadow:0 0 0 1px color-mix(in srgb,var(--green) 35%,transparent)}
+.dataset-card.dataset-selected .hist-learn{font-weight:700;color:var(--green)}
+.data-pager{display:flex;align-items:center;justify-content:center;gap:16px;padding:16px 21px 20px;border-top:1px solid var(--border)}
+.data-pager>span{min-width:72px;text-align:center;color:var(--muted);font-size:12px}
+.dataset-toolbar{margin-top:0}
+.dataset-filter-count{font-size:12px;color:var(--muted);white-space:nowrap}
+.dataset-list{padding:6px 21px 18px}
+.dataset-list td:first-child{display:flex;align-items:center;gap:8px}
 .hist-list{padding:6px 6px 10px}
 :root[data-theme='light'] .hist-select select,:root[data-theme='light'] .hist-search input{background:#fff;border-color:#cfd9e4;color:#344156}
 :root[data-theme='light'] .hist-toolbar{border-color:#e2e5e9}
@@ -94,6 +105,12 @@
 :root[data-theme='light'] .hist-meta svg{color:#7a7d83}
 :root[data-theme='light'] .hist-learn{color:#0a86c8}
 @media(max-width:1350px){.hist-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:1350px){.dataset-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:1100px){.hist-toolbar{flex-wrap:wrap}.hist-view-toggle{margin-left:0}.hist-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){.hist-grid{grid-template-columns:minmax(0,1fr);padding:16px 15px 18px}.hist-toolbar{padding:0 15px 16px}.hist-select{flex:1 1 100%}.hist-search{flex:1 1 100%}.hist-list-btn{width:100%;justify-content:center}.hist-card{min-height:0}.hist-card p{min-height:0}}
+@media(max-width:640px){.dataset-grid{grid-template-columns:minmax(0,1fr)}}
 
+
+/* Shared semantic status colors. */
+:root{--color-emerald:#55dfb0;--color-sky:#62b5ef;--color-amber:#deb577;--color-rose:#ef8f93;--color-muted:#7e899b}
+:root[data-theme='light']{--color-emerald:#168a66;--color-sky:#2f7bb6;--color-amber:#b07d2a;--color-rose:#c2555f;--color-muted:#64748b}

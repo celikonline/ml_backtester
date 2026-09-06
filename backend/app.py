@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .engine import demo_prices, describe, read_prices, run_experiment
+from .engine import demo_prices, describe, preview_value, read_prices, run_experiment
 from .i18n import translate
 from .platform.scope import workspace_scope
 
@@ -85,6 +85,24 @@ def list_datasets():
     for path in DATA.glob("dataset-*.json"):
         records.append(json.loads(path.read_text(encoding="utf-8")))
     return records
+
+
+@app.get("/api/datasets/{identifier}/preview")
+def dataset_preview(identifier: str, page: int = 1, page_size: int = 25):
+    """Return one bounded page of dataset rows for the preview table."""
+    if page < 1 or page_size < 1 or page_size > 200:
+        raise HTTPException(422, "Geçersiz sayfalama parametresi.")
+    df, name, demo = dataset(identifier)
+    start = (page - 1) * page_size
+    rows = df.iloc[start:start + page_size]
+    return {
+        "id": identifier,
+        "name": name,
+        "page": page,
+        "page_size": page_size,
+        "total": len(df),
+        "rows": [{"timestamp": t.isoformat(), **{k: preview_value(v) for k, v in row.items()}} for t, row in rows.iterrows()],
+    }
 
 
 @app.post("/api/datasets")
@@ -215,10 +233,11 @@ def project():
 
 
 DIST = ROOT / "frontend" / "dist"
-from .platform.api import router as experiment_router, domain_error
+from .platform.api import router as experiment_router, domain_error, auth_router
 from .platform.schema import DomainError
 app.add_exception_handler(DomainError, domain_error)
 app.include_router(experiment_router(dataset, list_datasets))
+app.include_router(auth_router())
 
 if DIST.exists():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")

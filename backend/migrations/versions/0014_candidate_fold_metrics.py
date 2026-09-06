@@ -2,7 +2,7 @@
 from alembic import op
 import sqlalchemy as sa
 revision = "0014_candidate_fold_metrics"
-down_revision = "0013_auth"
+down_revision = "0012_notebook_lab"
 branch_labels = depends_on = None
 
 

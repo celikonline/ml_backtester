@@ -12,12 +12,12 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import {
-  AlertCircle, Archive, ArrowRight, BookOpen, Check, ChevronDown,
-  ChevronRight, Clock3, FileCode2, FlaskConical, Folder, Key, Loader2,
-  Package, Play, Plus, RefreshCw, Square, Terminal, Trash2,
-  Upload, X, Zap
+  AlertCircle, Archive, BookOpen,
+  ChevronRight, Clock3, FileCode2, Folder, Key, Loader2,
+  Package, Play, Plus, RefreshCw, Square, Trash2,
+  Upload, X
 } from 'lucide-react';
-import { request, headers, terminal as isTerminal } from './platform-api';
+import { request, headers } from './platform-api';
 import type { Event } from './platform-api';
 import { useWorkspace } from './workspace';
 import { useLang } from './i18n';
@@ -45,6 +45,7 @@ interface NbRun {
   exit_code: number | null; error_type: string | null;
   error_message: string | null; metrics: Record<string, number> | null;
   artifact_count: number; created_at: string;
+  executed_notebook_path?: string | null;
   artifacts?: Artifact[];
 }
 interface Artifact { name: string; size_bytes: number; sha256: string; content_type: string; path: string; }
@@ -55,17 +56,17 @@ interface Inspection {
 }
 interface WorkspaceSecret { id: string; key_name: string; description: string; created_at: string; updated_at: string; }
 interface Experiment { id: string; code: string; name: string; status: string; }
-interface Snapshot { id: string; sha256: string; details: { name: string; rows: number }; created_at: string; }
+interface Snapshot { id: string; sha256: string; details: { name?: string; rows?: number }; created_at: string; }
 
 const NB_TERMINAL = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'POLICY_REJECTED']);
 
 function statusColor(s: string) {
-  if (s === 'COMPLETED') return 'var(--color-emerald)';
+  if (s === 'COMPLETED') return 'var(--green)';
   if (s === 'RUNNING' || s === 'PREPARING') return 'var(--color-sky)';
   if (s === 'QUEUED') return 'var(--color-amber)';
   if (s === 'FAILED' || s === 'TIMEOUT') return 'var(--color-rose)';
-  if (s === 'CANCELLED') return 'var(--color-muted)';
-  return 'var(--color-muted)';
+  if (s === 'CANCELLED') return 'var(--muted)';
+  return 'var(--muted)';
 }
 
 function fmtBytes(b: number) {
@@ -75,7 +76,7 @@ function fmtBytes(b: number) {
 }
 
 function fmtDuration(s: number | null) {
-  if (!s) return '—';
+  if (s == null) return '—';
   const m = Math.floor(s / 60), sec = Math.round(s % 60);
   return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
 }
@@ -95,6 +96,7 @@ export default function NotebookLab() {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [secrets, setSecrets] = useState<WorkspaceSecret[]>([]);
+  const [issues, setIssues] = useState<Inspection['issues']>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -121,11 +123,11 @@ export default function NotebookLab() {
       const [nbs, ev, snaps] = await Promise.all([
         request<Notebook[]>(`/workspaces/${wsId}/notebooks`),
         request<Experiment[]>(`/experiments?workspace_id=${wsId}`),
-        request<Snapshot[]>(`/datasets`),
+        request<Snapshot[]>(`/workspaces/${wsId}/snapshots`),
       ]);
       setNotebooks(nbs);
       setExperiments(ev);
-      setSnapshots(snaps as unknown as Snapshot[]);
+      setSnapshots(snaps);
       const e = await request<NbEnvironment[]>('/notebook-environments');
       setEnvs(e);
     } catch (e) { setError(String(e)); }
@@ -145,7 +147,7 @@ export default function NotebookLab() {
     } catch (e) { setError(String(e)); }
   }
 
-  useEffect(() => { loadAll(); }, [wsId]);
+  useEffect(() => { setSelectedNb(null); setSelectedRun(null); setLiveRunId(null); setRuns([]); setSnapshots([]); setNotebooks([]); setIssues([]); setView('list'); setRunDlgOpen(false); setRunParams({ experiment_id: '', dataset_snapshot_id: '', environment_id: '', network_mode: 'SNAPSHOT_ONLY', params_raw: '{}' }); loadAll(); }, [wsId]);
 
   useEffect(() => {
     if (runDlgOpen && runDlgRef.current && !runDlgRef.current.open) runDlgRef.current.showModal();
@@ -159,8 +161,8 @@ export default function NotebookLab() {
     const ctrl = new AbortController(); let cursor = 0;
     async function listen() {
       try {
-        const res = await fetch(`/api/v1/workspaces/${wsId}/notebook-runs/${liveRunId}/events?after=${cursor}`, { headers: headers(), signal: ctrl.signal });
-        if (!res.ok || !res.body) return;
+        const res = await fetch(`/api/v1/workspaces/${wsId}/notebook-runs/${liveRunId}/events?after=${cursor}`, { headers: Object.fromEntries(Object.entries(headers()).filter(([k]) => k.toLowerCase() !== 'content-type')), signal: ctrl.signal });
+        if (!res.ok || !res.body) throw new Error(t('nb.streamFailed'));
         const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
         while (true) {
           const { done, value } = await reader.read(); if (done) break;
@@ -181,7 +183,7 @@ export default function NotebookLab() {
             }
           }
         }
-      } catch { /* aborted */ }
+      } catch (e) { if (!ctrl.signal.aborted) setError(String(e)); }
     }
     listen();
     return () => ctrl.abort();
@@ -189,21 +191,21 @@ export default function NotebookLab() {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  async function uploadNotebook(file: File) {
+  async function uploadNotebook(file: File, version = false) {
     if (!wsId) return;
-    setUploading(true); setError('');
+    setUploading(true); setError(''); setIssues([]);
     try {
       const form = new FormData();
       form.append('file', file);
-      const res = await fetch(`/api/v1/workspaces/${wsId}/notebooks?name=${encodeURIComponent(file.name)}`, {
+      const url = version && selectedNb ? `/api/v1/workspaces/${wsId}/notebooks/${selectedNb.id}/versions` : `/api/v1/workspaces/${wsId}/notebooks?name=${encodeURIComponent(file.name)}`;
+      const res = await fetch(url, {
         method: 'POST', headers: Object.fromEntries(Object.entries(headers()).filter(([k]) => k !== 'Content-Type')), body: form,
       });
-      if (!res.ok) { const b = await res.json(); throw new Error(b.error?.message || 'Upload failed'); }
+      if (!res.ok) { const b = await res.json(); throw new Error(b.error?.message || b.detail || t('nb.uiUploadFailed')); }
       const nb = await res.json() as { inspection: Inspection } & Notebook;
       await loadAll();
-      if (nb.inspection && nb.inspection.issues.length) {
-        setError(`Notebook yüklendi. Uyarılar: ${nb.inspection.issues.map(i => i.code).join(', ')}`);
-      }
+      setIssues(nb.inspection?.issues || []);
+      if (version) await openNotebook(nb);
     } catch (e) { setError(String(e)); }
     finally { setUploading(false); if (uploadRef.current) uploadRef.current.value = ''; }
   }
@@ -212,13 +214,14 @@ export default function NotebookLab() {
     if (!wsId) return;
     try {
       const full = await request<Notebook>(`/workspaces/${wsId}/notebooks/${nb.id}`);
+      setSelectedRun(null); setLiveRunId(null); setRunLogs([]);
       setSelectedNb(full); setDetailTab('overview'); setView('detail');
       await loadRuns(nb.id);
     } catch (e) { setError(String(e)); }
   }
 
   async function archiveNotebook(nb: Notebook) {
-    if (!wsId || !confirm(`"${nb.name}" arşivlensin mi?`)) return;
+    if (!wsId || !confirm(t('nb.archiveConfirm').replace('{name}', nb.name))) return;
     try {
       await request(`/workspaces/${wsId}/notebooks/${nb.id}/archive`, 'POST');
       await loadAll(); setView('list'); setSelectedNb(null);
@@ -230,7 +233,7 @@ export default function NotebookLab() {
     setBusy(true); setError('');
     try {
       let params: Record<string, unknown> = {};
-      try { params = JSON.parse(runParams.params_raw); } catch { setError('Parametreler geçerli JSON değil.'); setBusy(false); return; }
+      try { params = JSON.parse(runParams.params_raw); if (!params || Array.isArray(params) || typeof params !== 'object') throw new Error(); } catch { setError(t('nb.uiParametersMustBeAValidJsonObject')); setBusy(false); return; }
       const body = {
         notebook_id: selectedNb.id,
         experiment_id: runParams.experiment_id || null,
@@ -261,7 +264,21 @@ export default function NotebookLab() {
     try {
       const full = await request<NbRun>(`/workspaces/${wsId}/notebook-runs/${run.id}`);
       setSelectedRun(full); setRunLogs([]);
-      if (!NB_TERMINAL.has(full.status)) { setLiveRunId(full.id); }
+      setLiveRunId(NB_TERMINAL.has(full.status) ? null : full.id);
+    } catch (e) { setError(String(e)); }
+  }
+
+  async function downloadArtifact(run: NbRun, name: string) {
+    if (!wsId) return;
+    try {
+      const res = await fetch(`/api/v1/workspaces/${wsId}/notebook-runs/${run.id}/artifacts/${name.split('/').map(encodeURIComponent).join('/')}`, {
+        headers: Object.fromEntries(Object.entries(headers()).filter(([k]) => k.toLowerCase() !== 'content-type')),
+      });
+      if (!res.ok) throw new Error(t('nb.downloadFailed'));
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement('a'); link.href = url; link.download = name.split('/').pop() || name;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) { setError(String(e)); }
   }
 
@@ -275,7 +292,7 @@ export default function NotebookLab() {
   }
 
   async function deleteSecret(key: string) {
-    if (!wsId || !confirm(`"${key}" silinsin mi?`)) return;
+    if (!wsId || !confirm(t('nb.deleteConfirm').replace('{name}', key))) return;
     try { await request(`/workspaces/${wsId}/secrets/${encodeURIComponent(key)}`, 'DELETE'); await loadSecrets(); }
     catch (e) { setError(String(e)); }
   }
@@ -288,34 +305,34 @@ export default function NotebookLab() {
       <div className="nb-header">
         <div className="nb-header-left">
           {view !== 'list' && (
-            <button className="text-button" onClick={() => { setView('list'); setSelectedNb(null); setSelectedRun(null); }}>
-              <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /> Geri
+            <button className="text-button" onClick={() => { setView('list'); setSelectedNb(null); setSelectedRun(null); setLiveRunId(null); }}>
+              <ChevronRight size={14} style={{ transform: 'rotate(180deg)' }} /> {t('nb.uiBack')}
             </button>
           )}
           <h2 className="nb-title">
             <BookOpen size={20} />
-            {view === 'list' ? 'Notebook Lab' : view === 'secrets' ? 'Workspace Secrets' : selectedNb?.name || 'Notebook Lab'}
+            {view === 'list' ? t('nb.uiNotebookLab') : view === 'secrets' ? t('nb.uiWorkspaceSecrets') : selectedNb?.name || t('nb.uiNotebookLab')}
           </h2>
-          {view === 'list' && <span className="badge">{notebooks.length} notebook</span>}
+          {view === 'list' && <span className="badge">{notebooks.length} {t('nb.notebooks')}</span>}
         </div>
         <div className="nb-header-right">
           {view === 'list' && (
             <>
               <button className="secondary" onClick={() => { setView('secrets'); loadSecrets(); }}>
-                <Key size={15} /> Secrets
+                <Key size={15} /> {t('nb.uiSecrets')}
               </button>
-              <button className="secondary" onClick={loadAll} title="Yenile">
+              <button className="secondary" onClick={loadAll} title={t('nb.uiRefresh')}>
                 <RefreshCw size={15} />
               </button>
               <label className="primary" style={{ cursor: 'pointer' }}>
-                {uploading ? <><Loader2 size={15} className="spin" /> Yükleniyor…</> : <><Upload size={15} /> Notebook Yükle</>}
+                {uploading ? <><Loader2 size={15} className="spin" /> {t('nb.uiUploading')}</> : <><Upload size={15} /> {t('nb.uiUploadNotebook')}</>}
                 <input ref={uploadRef} type="file" accept=".ipynb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) uploadNotebook(f); }} />
               </label>
             </>
           )}
           {view === 'detail' && selectedNb && (
             <button className="primary" onClick={() => setRunDlgOpen(true)}>
-              <Play size={15} /> Çalıştır
+              <Play size={15} /> {t('nb.uiRun')}
             </button>
           )}
         </div>
@@ -329,19 +346,25 @@ export default function NotebookLab() {
         </div>
       )}
 
+      {issues.map((issue, index) => (
+        <div key={index} className={`nb-inspection ${issue.severity === 'critical' ? 'critical' : 'warning'}`} role="status">
+          <AlertCircle size={15} /><strong>{issue.code}</strong><span>{issue.detail}</span>
+        </div>
+      ))}
+
       {/* Secrets view */}
       {view === 'secrets' && (
         <div className="nb-secrets">
           <div className="nb-section-header">
-            <h3>Workspace Secrets</h3>
-            <button className="primary" onClick={() => setSecretDlg(true)}><Plus size={15} /> Ekle</button>
+            <h3>{t('nb.uiWorkspaceSecrets')}</h3>
+            <button className="primary" onClick={() => setSecretDlg(true)}><Plus size={15} /> {t('nb.uiAdd')}</button>
           </div>
-          <p className="nb-desc">Secret değerleri loglanmaz, artifact'e yazılmaz. Notebook içinde <code>os.environ["KEY"]</code> ile kullanın.</p>
+          <p className="nb-desc">{t('nb.secretHelp')} <code>os.environ["KEY"]</code>.</p>
           {secrets.length === 0 ? (
-            <div className="nb-empty"><Key size={32} /><p>Henüz secret yok.</p></div>
+            <div className="nb-empty"><Key size={32} /><p>{t('nb.uiNoSecretsYet')}</p></div>
           ) : (
             <table className="nb-table">
-              <thead><tr><th>Anahtar</th><th>Açıklama</th><th>Güncelleme</th><th /></tr></thead>
+              <thead><tr><th>{t('nb.uiKey')}</th><th>{t('nb.uiDescription')}</th><th>{t('nb.uiUpdated')}</th><th /></tr></thead>
               <tbody>
                 {secrets.map(s => (
                   <tr key={s.id}>
@@ -358,13 +381,13 @@ export default function NotebookLab() {
             <div className="nb-overlay">
               <div className="nb-dialog">
                 <div className="nb-dialog-head">
-                  <h3><Key size={16} /> Secret Ekle</h3>
+                  <h3><Key size={16} /> {t('nb.uiAddSecret')}</h3>
                   <button className="icon-button" onClick={() => setSecretDlg(false)}><X size={18} /></button>
                 </div>
-                <label>Anahtar adı (büyük harf)<input value={secretForm.key} onChange={e => setSecretForm(p => ({ ...p, key: e.target.value.toUpperCase() }))} placeholder="FRED_API_KEY" /></label>
-                <label>Değer<input type="password" value={secretForm.value} onChange={e => setSecretForm(p => ({ ...p, value: e.target.value }))} /></label>
-                <label>Açıklama<input value={secretForm.description} onChange={e => setSecretForm(p => ({ ...p, description: e.target.value }))} /></label>
-                <button className="primary" onClick={saveSecret}>Kaydet</button>
+                <label>{t('nb.uiKeyNameUppercase')}<input value={secretForm.key} onChange={e => setSecretForm(p => ({ ...p, key: e.target.value.toUpperCase() }))} placeholder="FRED_API_KEY" /></label>
+                <label>{t('nb.uiValue')}<input type="password" value={secretForm.value} onChange={e => setSecretForm(p => ({ ...p, value: e.target.value }))} /></label>
+                <label>{t('nb.uiDescription')}<input value={secretForm.description} onChange={e => setSecretForm(p => ({ ...p, description: e.target.value }))} /></label>
+                <button className="primary" onClick={saveSecret}>{t('nb.uiSave')}</button>
               </div>
             </div>
           )}
@@ -377,10 +400,10 @@ export default function NotebookLab() {
           {notebooks.length === 0 ? (
             <div className="nb-empty-state">
               <BookOpen size={48} strokeWidth={1} />
-              <h3>Notebook Lab</h3>
-              <p>Araştırma notebook'larını workspace'e bağlı, versiyonlanmış ve parameterize edilmiş şekilde çalıştırın.</p>
+              <h3>{t('nb.uiNotebookLab')}</h3>
+              <p>{t('nb.uiRunVersionedParameterizedResearchNotebooksInYourWorkspace')}</p>
               <label className="primary" style={{ cursor: 'pointer', display: 'inline-flex', gap: '0.5rem', alignItems: 'center' }}>
-                <Upload size={16} /> İlk Notebook'u Yükle
+                <Upload size={16} /> {t('nb.uiUploadYourFirstNotebook')}
                 <input type="file" accept=".ipynb" hidden onChange={e => { const f = e.target.files?.[0]; if (f) uploadNotebook(f); }} />
               </label>
             </div>
@@ -390,7 +413,7 @@ export default function NotebookLab() {
                 <div key={nb.id} className="nb-card" onClick={() => openNotebook(nb)}>
                   <div className="nb-card-top">
                     <FileCode2 size={20} />
-                    <span className={`badge ${nb.status === 'ARCHIVED' ? 'muted' : ''}`}>{nb.status === 'ARCHIVED' ? 'Arşiv' : `v${nb.version}`}</span>
+                    <span className={`badge ${nb.status === 'ARCHIVED' ? 'muted' : ''}`}>{nb.status === 'ARCHIVED' ? t('nb.uiArchived') : `v${nb.version}`}</span>
                   </div>
                   <h3>{nb.name}</h3>
                   <p>{nb.description || nb.source_filename}</p>
@@ -412,7 +435,7 @@ export default function NotebookLab() {
           <div className="nb-tabs">
             {['overview', 'runs', 'versions', 'artifacts'].map(tab => (
               <button key={tab} className={`nb-tab ${detailTab === tab ? 'active' : ''}`} onClick={() => setDetailTab(tab)}>
-                {tab === 'overview' ? 'Genel Bakış' : tab === 'runs' ? 'Çalıştırmalar' : tab === 'versions' ? 'Versiyonlar' : 'Artifacts'}
+                {tab === 'overview' ? t('nb.uiOverview') : tab === 'runs' ? t('nb.uiRuns') : tab === 'versions' ? t('nb.uiVersions') : t('nb.uiArtifacts')}
               </button>
             ))}
           </div>
@@ -421,18 +444,22 @@ export default function NotebookLab() {
           {detailTab === 'overview' && (
             <div className="nb-overview">
               <div className="nb-meta-grid">
-                <div className="nb-meta-item"><small>Kod</small><b>{selectedNb.notebook_code}</b></div>
-                <div className="nb-meta-item"><small>Versiyon</small><b>v{selectedNb.version}</b></div>
-                <div className="nb-meta-item"><small>Dosya</small><b>{selectedNb.source_filename}</b></div>
-                <div className="nb-meta-item"><small>Durum</small><b>{selectedNb.status}</b></div>
-                <div className="nb-meta-item"><small>Oluşturulma</small><b>{selectedNb.created_at.slice(0, 16).replace('T', ' ')}</b></div>
-                <div className="nb-meta-item"><small>Güncelleme</small><b>{selectedNb.updated_at.slice(0, 16).replace('T', ' ')}</b></div>
+                <div className="nb-meta-item"><small>{t('nb.uiCode')}</small><b>{selectedNb.notebook_code}</b></div>
+                <div className="nb-meta-item"><small>{t('nb.uiVersion')}</small><b>v{selectedNb.version}</b></div>
+                <div className="nb-meta-item"><small>{t('nb.uiFile')}</small><b>{selectedNb.source_filename}</b></div>
+                <div className="nb-meta-item"><small>{t('nb.uiStatus')}</small><b>{selectedNb.status}</b></div>
+                <div className="nb-meta-item"><small>{t('nb.uiCreated')}</small><b>{selectedNb.created_at.slice(0, 16).replace('T', ' ')}</b></div>
+                <div className="nb-meta-item"><small>{t('nb.uiUpdated')}</small><b>{selectedNb.updated_at.slice(0, 16).replace('T', ' ')}</b></div>
               </div>
               {selectedNb.description && <p className="nb-desc">{selectedNb.description}</p>}
               <div className="nb-actions-row">
-                <button className="primary" onClick={() => setRunDlgOpen(true)}><Play size={15} /> Çalıştır</button>
+                <label className="secondary">
+                  <Upload size={15} /> {t('nb.newVersion')}
+                  <input type="file" accept=".ipynb" hidden disabled={uploading} onChange={e => { const f = e.target.files?.[0]; if (f) uploadNotebook(f, true); e.target.value = ''; }} />
+                </label>
+                <button className="primary" onClick={() => setRunDlgOpen(true)}><Play size={15} /> {t('nb.uiRun')}</button>
                 <button className="secondary" onClick={() => archiveNotebook(selectedNb)}>
-                  <Archive size={15} /> Arşivle
+                  <Archive size={15} /> {t('nb.uiArchive')}
                 </button>
               </div>
             </div>
@@ -448,13 +475,13 @@ export default function NotebookLab() {
                     <Loader2 size={16} className="spin" />
                     <span>{selectedRun.run_code} — {selectedRun.status}</span>
                     <button className="text-button" onClick={() => cancelRun(selectedRun.id)}>
-                      <Square size={13} /> İptal
+                      <Square size={13} /> {t('nb.uiCancel')}
                     </button>
                   </div>
                   <div className="nb-log-stream">
                     {runLogs.slice(-20).map(ev => (
                       <div key={ev.id} className="nb-log-line">
-                        <code>{ev.type}</code>
+                        <code>{ev.type} {JSON.stringify(ev.payload)}</code>
                         <span>{ev.created_at.slice(11, 19)}</span>
                       </div>
                     ))}
@@ -485,13 +512,14 @@ export default function NotebookLab() {
                   )}
                   {selectedRun.artifacts && selectedRun.artifacts.length > 0 && (
                     <div className="nb-artifacts">
-                      <h4><Folder size={15} /> Artifacts ({selectedRun.artifacts.length})</h4>
+                      <h4><Folder size={15} /> {t('nb.uiArtifacts')} ({selectedRun.artifacts.length})</h4>
                       <div className="nb-artifact-list">
                         {selectedRun.artifacts.map(a => (
                           <div key={a.name} className="nb-artifact-item">
                             <Package size={13} />
                             <span>{a.name}</span>
                             <small>{fmtBytes(a.size_bytes)}</small>
+                            <button className="text-button" onClick={() => downloadArtifact(selectedRun, a.name)}>{t('nb.download')}</button>
                           </div>
                         ))}
                       </div>
@@ -502,15 +530,15 @@ export default function NotebookLab() {
 
               {/* Run history table */}
               <div className="nb-section-header" style={{ marginTop: '1.5rem' }}>
-                <h4>Tüm Çalıştırmalar</h4>
+                <h4>{t('nb.uiAllRuns')}</h4>
                 <button className="text-button" onClick={() => loadRuns(selectedNb.id)}><RefreshCw size={13} /></button>
               </div>
               {runs.length === 0 ? (
-                <div className="nb-empty"><Clock3 size={28} /><p>Henüz çalıştırma yok.</p></div>
+                <div className="nb-empty"><Clock3 size={28} /><p>{t('nb.uiNoRunsYet')}</p></div>
               ) : (
                 <table className="nb-table">
                   <thead>
-                    <tr><th>Kod</th><th>Durum</th><th>Süre</th><th>Artifacts</th><th>Tarih</th><th /></tr>
+                    <tr><th>{t('nb.uiCode')}</th><th>{t('nb.uiStatus')}</th><th>{t('nb.uiDuration')}</th><th>{t('nb.uiArtifacts')}</th><th>{t('nb.uiDate')}</th><th /></tr>
                   </thead>
                   <tbody>
                     {runs.map(run => (
@@ -549,9 +577,16 @@ export default function NotebookLab() {
             </div>
           )}
 
-          {/* Artifacts tab — shows last completed run */}
+          {/* Artifacts across run history */}
           {detailTab === 'artifacts' && (
             <div>
+              <label>{t('nb.selectRun')}
+                <select value={selectedRun?.id || ''} onChange={e => { const run = runs.find(r => r.id === e.target.value); if (run) openRun(run); else setSelectedRun(null); }}>
+                  <option value="">{t('nb.selectRun')}</option>
+                  {runs.map(run => <option key={run.id} value={run.id}>{run.run_code} — {run.status} ({run.artifact_count})</option>)}
+                </select>
+              </label>
+              {selectedRun?.executed_notebook_path && <button className="secondary" onClick={() => downloadArtifact(selectedRun, 'executed.ipynb')}>{t('nb.executed')}</button>}
               {selectedRun?.artifacts?.length ? (
                 <div className="nb-artifact-list">
                   {selectedRun.artifacts.map(a => (
@@ -559,11 +594,12 @@ export default function NotebookLab() {
                       <Package size={14} />
                       <span>{a.name}</span>
                       <small>{fmtBytes(a.size_bytes)}</small>
+                            <button className="text-button" onClick={() => downloadArtifact(selectedRun, a.name)}>{t('nb.download')}</button>
                       <span style={{ opacity: 0.5, fontSize: '0.75rem' }}>{a.content_type}</span>
                     </div>
                   ))}
                 </div>
-              ) : <div className="nb-empty"><Folder size={32} /><p>Artifact bulunamadı.</p></div>}
+              ) : <div className="nb-empty"><Folder size={32} /><p>{t('nb.uiNoArtifactsFound')}</p></div>}
             </div>
           )}
         </div>
@@ -573,36 +609,37 @@ export default function NotebookLab() {
       <dialog ref={runDlgRef} onCancel={() => setRunDlgOpen(false)} onClick={e => { if (e.target === runDlgRef.current) setRunDlgOpen(false); }}>
         <div className="nb-dialog">
           <div className="nb-dialog-head">
-            <h3><Play size={16} /> Notebook Çalıştır</h3>
+            <h3><Play size={16} /> {t('nb.uiRunNotebook')}</h3>
             <button className="icon-button" onClick={() => setRunDlgOpen(false)}><X size={18} /></button>
           </div>
           <div className="nb-dialog-body">
-            <label>Experiment (opsiyonel)
+            {error && <div className="alert" role="alert">{error}</div>}
+            <label>{t('nb.uiExperimentOptional')}
               <select value={runParams.experiment_id} onChange={e => setRunParams(p => ({ ...p, experiment_id: e.target.value }))}>
-                <option value="">— Seçme —</option>
+                <option value="">{t('nb.uiNone')}</option>
                 {experiments.map(e => <option key={e.id} value={e.id}>{e.code} — {e.name}</option>)}
               </select>
             </label>
-            <label>Dataset Snapshot (opsiyonel)
+            <label>{t('nb.uiDatasetSnapshotOptional')}
               <select value={runParams.dataset_snapshot_id} onChange={e => setRunParams(p => ({ ...p, dataset_snapshot_id: e.target.value }))}>
-                <option value="">— Seçme (Exploratory mode) —</option>
-                {snapshots.map(s => <option key={s.id} value={s.id}>{(s as any).name || s.id} ({s.id.slice(0, 8)})</option>)}
+                <option value="">{t('nb.uiNoneExploratoryMode')}</option>
+                {snapshots.map(s => <option key={s.id} value={s.id}>{s.details.name || s.id} ({s.id.slice(0, 8)})</option>)}
               </select>
             </label>
-            <label>Environment
+            <label>{t('nb.uiEnvironment')}
               <select value={runParams.environment_id} onChange={e => setRunParams(p => ({ ...p, environment_id: e.target.value }))}>
-                <option value="">— Varsayılan —</option>
+                <option value="">{t('nb.uiDefault')}</option>
                 {envs.map(e => <option key={e.id} value={e.id}>{e.name} (Python {e.python_version})</option>)}
               </select>
             </label>
-            <label>Network Mode
+            <label>{t('nb.uiNetworkMode')}
               <select value={runParams.network_mode} onChange={e => setRunParams(p => ({ ...p, network_mode: e.target.value }))}>
-                <option value="SNAPSHOT_ONLY">SNAPSHOT_ONLY (Reproducible)</option>
-                <option value="EXPLORATORY_NETWORK">EXPLORATORY_NETWORK (Non-reproducible)</option>
+                <option value="SNAPSHOT_ONLY">{t('nb.uiSnapshotOnlyReproducible')}</option>
+                <option value="EXPLORATORY_NETWORK">{t('nb.uiExploratoryNetworkNonReproducible')}</option>
               </select>
             </label>
             <label>
-              Ek Parametreler (JSON)
+              {t('nb.uiExtraParametersJson')}
               <textarea
                 rows={4}
                 style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
@@ -613,14 +650,14 @@ export default function NotebookLab() {
             </label>
             {runParams.network_mode === 'EXPLORATORY_NETWORK' && (
               <div className="alert" style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)' }}>
-                <AlertCircle size={14} /> Exploratory mode — sonuçlar reproducible değil.
+                <AlertCircle size={14} /> {t('nb.uiExploratoryModeResultsAreNotReproducible')}
               </div>
             )}
           </div>
           <div className="nb-dialog-foot">
-            <button className="secondary" onClick={() => setRunDlgOpen(false)}>İptal</button>
+            <button className="secondary" onClick={() => setRunDlgOpen(false)}>{t('nb.uiCancel')}</button>
             <button className="primary" onClick={submitRun} disabled={busy}>
-              {busy ? <Loader2 size={15} className="spin" /> : <Play size={15} />} Çalıştır
+              {busy ? <Loader2 size={15} className="spin" /> : <Play size={15} />} {t('nb.uiRun')}
             </button>
           </div>
         </div>

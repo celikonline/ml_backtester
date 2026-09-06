@@ -573,7 +573,7 @@ class NotebookService:
             if run["workspace_id"] != ws["id"]:
                 raise DomainError("Run bulunamadı.", 404, "not_found")
         # Attach artifacts list
-        artifact_dir = self.storage / "notebook_runs" / run_id / "artifacts"
+        artifact_dir = self.storage / "notebook_runs" / run["id"] / "artifacts"
         from backend.platform.notebooks.artifacts import collect_artifacts
         artifacts = collect_artifacts(artifact_dir) if artifact_dir.exists() else []
         return {**run, "artifacts": artifacts}
@@ -607,6 +607,31 @@ class NotebookService:
     def get_run_metrics(self, run_id: str) -> dict:
         run = self._get_run(run_id)
         return run.get("metrics") or {}
+
+    def list_snapshots(self, workspace_id: str) -> list[dict]:
+        with self.engine.connect() as con:
+            ws = self._resolve_workspace(con, workspace_id)
+            return [dict(row) for row in con.execute(
+                select(snapshots.c.id, snapshots.c.sha256, snapshots.c.details, snapshots.c.created_at)
+                .where(snapshots.c.workspace_id == ws["id"])
+                .order_by(snapshots.c.created_at.desc())
+            ).mappings()]
+
+    def artifact_path(self, run_id: str, name: str, workspace_id: str) -> Path:
+        run = self.get_run(run_id, workspace_id=workspace_id)
+        root = self.safe_path(f"notebook_runs/{run['id']}")
+        if name == "executed.ipynb":
+            path = (root / name).resolve()
+        else:
+            artifact_root = root / "artifacts"
+            path = (artifact_root / name).resolve()
+            if not path.is_relative_to(artifact_root.resolve()):
+                raise DomainError("Invalid artifact path.", 404, "not_found")
+            if name not in {a["name"] for a in run["artifacts"]}:
+                raise DomainError("Artifact not found.", 404, "not_found")
+        if not path.is_relative_to(root) or not path.is_file():
+            raise DomainError("Artifact not found.", 404, "not_found")
+        return path
 
     def get_run_artifacts(self, run_id: str) -> list[dict]:
         artifact_dir = self.storage / "notebook_runs" / run_id / "artifacts"
