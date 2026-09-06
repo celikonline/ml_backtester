@@ -1,0 +1,29 @@
+.guide-panel { position: fixed; z-index: 90; top: 0; right: 0; bottom: 0; width: min(620px, 100vw); display: flex; flex-direction: column; background: #0f151d; border-left: 1px solid #2d3c49; box-shadow: -16px 0 55px #0009; }
+.guide-panel-header { min-height: 69px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 25px; border-bottom: 1px solid var(--border); background: #121b25; }
+.guide-panel-header h2 { margin-top: 5px; color: #e2eaf2; font-size: 16px; }
+.guide-panel-header-actions { display: flex; align-items: center; gap: 5px; }
+.guide-panel-body { flex: 1; overflow-y: auto; padding: 24px; }
+.guide-panel-body .getting-started { max-width: 100%; }
+.guide-panel.is-fullscreen { inset: 0; width: 100vw; }
+.guide-panel.is-fullscreen .guide-panel-body { padding: 32px 5vw; }
+html.guide-is-pinned .main-shell { width: calc(100% - 240px - 620px); margin-right: 620px; }
+html.guide-is-pinned:has(.guide-panel.is-fullscreen) .main-shell { width: calc(100% - 240px); margin-right: 0; }
+html.guide-is-pinned .guide-panel .getting-started-hero { align-items: flex-start; flex-wrap: wrap; }
+html.guide-is-pinned .guide-panel .getting-started-actions { width: 100%; margin-left: 0; }
+html.guide-is-pinned .guide-panel .getting-started-actions button { flex: 1; }
+
+:root[data-theme='light'] .guide-panel { background: #f7f9fc; border-color: #dbe3ec; box-shadow: -16px 0 55px #17203322; }
+:root[data-theme='light'] .guide-panel-header { background: #fff; }
+:root[data-theme='light'] .guide-panel-header h2 { color: #245b4a; }
+
+@media (max-width: 1200px) and (min-width: 761px) {
+  html.guide-is-pinned .main-shell { width: calc(100% - 210px - 540px); margin-right: 540px; }
+  .guide-panel { width: min(540px, 100vw); }
+}
+@media (max-width: 760px) {
+  .guide-panel { width: 100vw; }
+  .guide-panel-header { min-height: 55px; padding: 0 17px; }
+  .guide-panel-body { padding: 17px; }
+  .guide-panel.is-fullscreen .guide-panel-body { padding: 17px; }
+  html.guide-is-pinned .main-shell { width: 100%; margin-right: 0; }
+}

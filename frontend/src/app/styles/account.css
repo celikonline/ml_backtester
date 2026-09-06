@@ -1,0 +1,174 @@
+.account-shell {
+  display: grid;
+  grid-template-columns: 205px minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+.account-nav {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px;
+  position: sticky;
+  top: 20px;
+}
+.account-nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 6px;
+  padding: 11px 10px;
+  background: transparent;
+  color: #8795a8;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .35px;
+}
+.account-nav-item:hover,
+.account-nav-item.active { background: #18302c; color: var(--green); }
+.account-main { min-width: 0; }
+.account-section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 25px;
+}
+.account-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 22px;
+}
+.account-section-header h2 { font-size: 20px; }
+.account-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.account-stat {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 16px;
+  background: #101720;
+}
+.account-stat-label { color: #748399; font-size: 8px; letter-spacing: 1px; }
+.account-stat-value { color: #e8edf4; font: 600 25px 'Manrope', sans-serif; margin-top: 12px; }
+.account-stat-sub { color: var(--muted); font-size: 9px; margin-top: 6px; }
+.account-profile-card {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid #2a463e;
+  border-radius: 8px;
+  background: linear-gradient(110deg, #17332d, #131b23 70%);
+}
+.account-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #255c4a;
+  border: 1px solid #55dfb088;
+  color: var(--green);
+  font-size: 21px;
+  font-weight: 700;
+}
+.account-profile-info { display: flex; flex-direction: column; gap: 7px; }
+.account-profile-info b { font-size: 16px; }
+.account-profile-info small { color: #9aa9bb; font-size: 11px; }
+.account-profile-info .badge { align-self: flex-start; font-size: 8px; }
+.account-meta {
+  display: flex;
+  gap: 25px;
+  flex-wrap: wrap;
+  color: #8391a4;
+  font-size: 10px;
+  margin-top: 18px;
+}
+.account-meta b { color: #b9c5d3; font-weight: 500; margin-right: 6px; }
+.settings-block { border-top: 1px solid var(--border); padding: 20px 0; }
+.settings-block:first-of-type { border-top: 0; padding-top: 0; }
+.settings-block-title { color: #d3dce7; font-size: 12px; margin-bottom: 11px; }
+.settings-field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.account-input { flex: 1; min-width: 170px; margin-top: 0 !important; }
+.account-input.password { min-width: 190px; }
+.account-btn { white-space: nowrap; }
+.settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.settings-grid .account-btn { grid-column: 1 / -1; justify-self: start; }
+.settings-desc, .account-save-note { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.account-save-note { color: var(--green); margin-top: 9px; }
+.security-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-top: 16px;
+}
+.security-card:first-of-type { margin-top: 0; }
+.security-card-header { display: flex; align-items: center; gap: 10px; padding: 15px 17px; background: #101720; color: #cbd6e3; font-size: 12px; }
+.security-card-header svg { color: var(--green); }
+.security-card-body { padding: 18px; color: var(--muted); font-size: 11px; }
+.security-card-body p { line-height: 1.7; }
+.token-display { margin: 14px 0; padding: 12px; border-radius: 5px; background: #0c121a; border: 1px solid #202b38; overflow: auto; }
+.token-code { color: #83d5b8; font: 10px Consolas, monospace; margin: 0; }
+.token-meta { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 16px; }
+.token-meta div { display: flex; flex-direction: column; gap: 5px; }
+.token-meta b { color: #aebdce; font-size: 9px; font-weight: 500; }
+.token-meta span { font-size: 10px; }
+.security-placeholder { padding: 13px; border: 1px dashed #344453; border-radius: 6px; color: #8998aa; }
+.sessions-table-wrap { overflow-x: auto; }
+.sessions-table { min-width: 630px; }
+.session-agent { display: inline-block; max-width: 210px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.session-revoke { color: #e99498; }
+.deactivation-card { display: flex; gap: 15px; padding: 18px; border: 1px solid #70434a; border-radius: 8px; background: #3b222955; }
+.deactivation-icon { color: #e99498; flex-shrink: 0; }
+.deactivation-card h3 { color: #efb5ba; margin-bottom: 9px; }
+.deactivation-card p { color: #bd9a9f; font-size: 11px; line-height: 1.8; }
+.deactivation-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.deactivation-actions .security-placeholder { flex: 1; min-width: 230px; }
+.account-alert { margin-top: 16px; padding: 12px 15px; border: 1px solid #80505a; border-radius: 6px; color: #efb5ba; background: #4c252d55; display: flex; justify-content: space-between; gap: 15px; font-size: 11px; }
+.account-alert button { border: 0; background: transparent; color: inherit; }
+
+@media (max-width: 900px) {
+  .account-shell { grid-template-columns: 1fr; }
+  .account-nav { position: static; display: flex; overflow-x: auto; gap: 4px; }
+  .account-nav-item { width: auto; white-space: nowrap; }
+}
+@media (max-width: 620px) {
+  .account-section { padding: 18px; }
+  .account-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-grid { grid-template-columns: 1fr; }
+  .settings-grid .account-btn { grid-column: auto; }
+  .account-input { width: 100%; min-width: 100%; }
+  .account-btn { width: 100%; }
+  .settings-field .segmented { width: 100%; }
+  .settings-field .segmented button { flex: 1; }
+}
+
+:root[data-theme='light'] .account-nav,
+:root[data-theme='light'] .account-section { box-shadow: 0 1px 2px #15223b08; }
+:root[data-theme='light'] .account-nav-item { color: #607087; }
+:root[data-theme='light'] .account-nav-item:hover,
+:root[data-theme='light'] .account-nav-item.active { background: #e0f4ed; color: #087454; }
+:root[data-theme='light'] .account-stat { background: #f8fafc; }
+:root[data-theme='light'] .account-stat-value { color: #172033; }
+:root[data-theme='light'] .account-profile-card { background: linear-gradient(110deg, #eef9f5, #fff 70%); border-color: #cce7db; }
+:root[data-theme='light'] .account-profile-info b { color: #172033; }
+:root[data-theme='light'] .account-profile-info small,
+:root[data-theme='light'] .account-meta { color: #64748b; }
+:root[data-theme='light'] .account-meta b,
+:root[data-theme='light'] .settings-block-title { color: #344156; }
+:root[data-theme='light'] .security-card-header,
+:root[data-theme='light'] .token-display { background: #f7f9fc; }
+:root[data-theme='light'] .security-card-body { color: #64748b; }
+:root[data-theme='light'] .token-code { color: #087454; }
+:root[data-theme='light'] .security-placeholder { border-color: #cfd9e4; color: #64748b; }
+:root[data-theme='light'] .deactivation-card { background: #fff5f5; border-color: #e7c8cc; }
+:root[data-theme='light'] .deactivation-card h3 { color: #a14d56; }
+:root[data-theme='light'] .deactivation-card p { color: #7b5960; }

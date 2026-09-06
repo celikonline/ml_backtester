@@ -2,7 +2,21 @@ import { useEffect, useState } from 'react';
 import { LogOut, User, Mail, Lock, ShieldOff, KeyRound, Users, Archive, Globe2, Moon, Sun, AlertTriangle } from 'lucide-react';
 import { useAuth, getToken } from './auth';
 import { useLang } from './i18n';
-import { api } from './App';
+import './app/styles/account.css';
+
+async function accountRequest<T>(url: string, options: RequestInit = {}, lang: string): Promise<T> {
+  const response = await fetch(`/api${url}`, {
+    ...options,
+    headers: {
+      'Accept-Language': lang,
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.detail || body.error?.message || (lang === 'en' ? 'Request failed.' : 'İstek tamamlanamadı.'));
+  return body as T;
+}
 
 type AccountStats = {
   id: string;
@@ -41,8 +55,8 @@ function StatCard({ label, value, sub = '', kind = '' }: { label: string; value:
 }
 
 export default function AccountPage() {
-  const { t, lang, fmt, fmtDate } = useLang();
-  const { user, logout } = useAuth();
+  const { t, lang, setLang, fmtDate } = useLang();
+  const { user, logout, updateUser } = useAuth();
   const [stats, setStats] = useState<AccountStats | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState('');
@@ -64,25 +78,28 @@ export default function AccountPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordSaving, setPasswordSaving] = useState(false);
 
-  // Deactivation confirm
-  const [deactivating, setDeactivating] = useState(false);
-
-  useEffect(() => {
-    load();
-  }, []);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => localStorage.getItem('regimelab.theme') === 'light' ? 'light' : 'dark');
 
   async function load() {
     try {
       const token = getToken();
       if (!token) return;
-      const s = await api<AccountStats>('/auth/stats', { headers: { Authorization: `Bearer ${token}` } });
+      const s = await accountRequest<AccountStats>('/auth/stats', { headers: { Authorization: `Bearer ${token}` } }, lang);
       setStats(s);
-      const sess = await api<{ sessions: Session[] }>('/auth/sessions', { headers: { Authorization: `Bearer ${token}` } });
+      const sess = await accountRequest<{ sessions: Session[] }>('/auth/sessions', { headers: { Authorization: `Bearer ${token}` } }, lang);
       setSessions(sess.sessions);
-    } catch {
-      // Token revoked or expired server-side — force a clean re-login.
-      logout();
+    } catch (e) {
+      setError((e as Error).message);
     }
+  }
+
+  useEffect(() => { load(); }, [lang]);
+
+  function changeTheme(next: 'dark' | 'light') {
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('regimelab.theme', next);
+    window.dispatchEvent(new CustomEvent('regimelab:theme', { detail: next }));
   }
 
   async function saveName() {
@@ -97,6 +114,8 @@ export default function AccountPage() {
         body: JSON.stringify({ name: name.trim() }),
       });
       if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || t('account.success')); }
+      updateUser({ name: name.trim() });
+      setStats(current => current ? { ...current, name: name.trim() } : current);
       setError(t('account.success'));
       setTimeout(()=>setError(''), 2500);
     } catch (e) {
@@ -183,18 +202,6 @@ export default function AccountPage() {
     }
   }
 
-  async function deactivateAccount() {
-    if (!confirm(t('account.deactivationDesc'))) return;
-    setDeactivating(true);
-    try {
-      // In a real app this would call something like POST /auth/deactivate
-      logout();
-      window.location.href = '/';
-    } catch {
-      setDeactivating(false);
-    }
-  }
-
   return (
     <div className="account-shell">
       <aside className="account-nav">
@@ -266,8 +273,8 @@ export default function AccountPage() {
               <h3 className="settings-block-title">{t('account.prefLang')}</h3>
               <div className="settings-field">
                 <div className="segmented">
-                  <button className={lang === 'tr' ? 'chosen' : ''} onClick={() => {}}>TR</button>
-                  <button className={lang === 'en' ? 'chosen' : ''} onClick={() => {}}>EN</button>
+                  <button type="button" className={lang === 'tr' ? 'chosen' : ''} onClick={() => setLang('tr')}>TR</button>
+                  <button type="button" className={lang === 'en' ? 'chosen' : ''} onClick={() => setLang('en')}>EN</button>
                 </div>
               </div>
             </div>
@@ -276,11 +283,11 @@ export default function AccountPage() {
               <h3 className="settings-block-title">{t('account.prefTheme')}</h3>
               <div className="settings-field">
                 <div className="segmented">
-                  <button className={`theme-toggle-btn ${document.documentElement.dataset.theme === 'dark' ? 'chosen' : ''}`} onClick={() => {}}>
-                    <Moon size={15} /> Koyu
+                  <button type="button" className={`theme-toggle-btn ${theme === 'dark' ? 'chosen' : ''}`} onClick={() => changeTheme('dark')}>
+                    <Moon size={15} /> {lang === 'en' ? 'Dark' : 'Koyu'}
                   </button>
-                  <button className={`theme-toggle-btn ${document.documentElement.dataset.theme === 'light' ? 'chosen' : ''}`} onClick={() => {}}>
-                    <Sun size={15} /> Beyaz
+                  <button type="button" className={`theme-toggle-btn ${theme === 'light' ? 'chosen' : ''}`} onClick={() => changeTheme('light')}>
+                    <Sun size={15} /> {lang === 'en' ? 'Light' : 'Açık'}
                   </button>
                 </div>
               </div>
@@ -325,12 +332,12 @@ export default function AccountPage() {
               <div className="security-card-body">
                 <p>{t('account.token')}</p>
                 <div className="token-display">
-                  <pre className="token-code">{user?.id || stats?.id || '—'}</pre>
+                  <pre className="token-code">{user?.session_id ? `${user.session_id.slice(0, 8)}…` : '—'}</pre>
                 </div>
                 <div className="token-meta">
                   <div><b>{t('account.tokenCreated')}</b> <span>{stats?.created_at ? fmtDate(stats.created_at) : '—'}</span></div>
                   <div><b>{t('account.tokenLastUsed')}</b> <span>{stats?.last_login_at ? fmtDate(stats.last_login_at) : '—'}</span></div>
-                  <div><b>{t('account.tokenAgent')}</b> <span>{user?.id ? 'local-user' : '—'}</span></div>
+                <div><b>{t('account.tokenAgent')}</b> <span>{user?.session_id ? 'browser session' : '—'}</span></div>
                 </div>
                 <button className="primary account-btn" onClick={() => setSection('sessions')}>
                   <Users size={15} /> {t('account.activeSessions')}
@@ -374,7 +381,7 @@ export default function AccountPage() {
                       {sessions.map(s => (
                         <tr key={s.id}>
                           <td>{fmtDate(s.issued_at)}</td>
-                          <td>{fmtDate(s.expires_at)}</td>
+                              <td>{fmtDate(s.last_used)}</td>
                           <td><span className="session-agent" title={s.user_agent}>{s.user_agent.slice(0, 50)}{s.user_agent.length > 50 ? '…' : ''}</span></td>
                           <td><span className={`badge ${s.active ? '' : 'amber'}`}>{s.current ? t('account.sessionCurrent') : s.active ? t('account.sessionActive') : t('account.sessionInactive')}</span></td>
                           <td><button className="text-button session-revoke" disabled={busy} onClick={() => {
@@ -411,10 +418,9 @@ export default function AccountPage() {
               </div>
             </div>
             <div className="deactivation-actions">
-              <a className="secondary" href={t('account.learnMore')} target="_blank" rel="noreferrer">{t('account.learnMore')}</a>
-              <a className="secondary" href={t('account.contactUs')} target="_blank" rel="noreferrer">{t('account.contactUs')}</a>
-              <button className="primary account-btn" disabled={deactivating} onClick={deactivateAccount}>
-                {deactivating ? <span className="spin-loader" /> : <><Archive size={15} /> Hesabı devre dışı bırak</>}
+              <div className="security-placeholder">{t('account.deactivationUnavailable')}</div>
+              <button className="secondary account-btn" onClick={() => setSection('security')}>
+                <ShieldOff size={15} /> {t('account.security')}
               </button>
             </div>
           </section>

@@ -500,6 +500,62 @@ def feature_analysis(x, y, seed, missingness=None, dev_states=None, n_states=0):
     return {"scope":"development_only","features":out,"redundancy_pairs":redundant,"window_count":4}
 
 
+def _candidate_for_model(optimization, model_id, regime_id=None):
+    """Choose a model/feature genome using development-only OOF metrics."""
+    candidates = [c for c in optimization["candidates"] if c["model"] == model_id and c["feasible"]]
+    if not candidates:
+        return None
+    if regime_id is not None:
+        qualified = [c for c in candidates if any(
+            int(item["regime"]) == regime_id and item["qualified"]
+            for item in c.get("regime_metrics", []))]
+        if qualified:
+            candidates = qualified
+            candidates.sort(key=lambda c: next(
+                item["sharpe"] for item in c["regime_metrics"] if int(item["regime"]) == regime_id), reverse=True)
+            return candidates[0]
+    return max(candidates, key=lambda c: (c["fitness"], c["id"]))
+
+
+def _routed_forecast(x_dev, y_dev, x, dev_states, states, spec, optimization, emit):
+    """Train regime specialists on development data and predict the test slice.
+
+    State labels and assignments are fixed before test access. A specialist is
+    only fitted when its development regime has enough bars; otherwise the
+    frozen global fallback genome is used for that state.
+    """
+    routing = spec.regime_routing
+    best = optimization["best"]
+    fallback_model = routing.fallback_model if routing.fallback_model in spec.models else best["model"]
+    fallback = _candidate_for_model(optimization, fallback_model) or best
+    features = fallback["features"]
+    fallback_adapter = ModelAdapter(fallback["model"], fallback["parameters"], spec.seed).fit(x_dev[features], y_dev)
+    assignments = {str(k): routing.assignments.get(str(k), fallback_model) for k in range(spec.regime_states)}
+    predictions = np.empty(len(x), dtype=float)
+    details = []
+    for regime in range(spec.regime_states):
+        model_id = assignments[str(regime)]
+        candidate = _candidate_for_model(optimization, model_id, regime) or _candidate_for_model(optimization, model_id) or fallback
+        train_mask = np.asarray(dev_states) == regime
+        train_bars = int(train_mask.sum())
+        use_fallback = train_bars < routing.min_regime_bars
+        if use_fallback:
+            predictions[states == regime] = fallback_adapter.predict(x.loc[states == regime][features])
+        else:
+            selected = candidate["features"]
+            adapter = ModelAdapter(candidate["model"], candidate["parameters"], spec.seed).fit(
+                x_dev.loc[train_mask, selected], y_dev[train_mask])
+            predictions[states == regime] = adapter.predict(x.loc[states == regime][selected])
+        details.append({"regime": regime, "model": candidate["model"], "features": candidate["features"],
+                        "train_bars": train_bars, "used_fallback": use_fallback,
+                        "fallback_model": fallback["model"] if use_fallback else None})
+        emit("routing.specialist.ready", {"regime": regime, "model": candidate["model"],
+                                           "train_bars": train_bars, "used_fallback": use_fallback})
+    return predictions, {"enabled": True, "fallback_model": fallback["model"],
+                         "min_regime_bars": routing.min_regime_bars, "assignments": assignments,
+                         "states_source": "causal_hmm_development_fit", "specialists": details}
+
+
 def execute_research(df, spec:ExperimentSpec, emit, artifact_dir:Path):
     with threadpool_limits(limits=2):
         return _execute(df,spec,emit,artifact_dir)
@@ -560,13 +616,23 @@ def _execute(df,spec,emit,artifact_dir):
     optimization = optimize(x_dev,y_dev,spec,annual,emit,dev_market,router,[mask[:dev_end] for mask in masks])
     best = optimization["best"]
     emit("stage",{"status":"VALIDATING","progress":70,"message":"Seçilen aday sabitleniyor"})
-    freeze = {"candidate":best,"development_end":x_dev.index[-1].isoformat(),"test_start":x.index[b].isoformat(),"seed":spec.seed}
+    freeze = {"candidate":best,"development_end":x_dev.index[-1].isoformat(),"test_start":x.index[b].isoformat(),"seed":spec.seed,
+              "regime_routing": spec.regime_routing.model_dump()}
     (artifact_dir/"frozen_candidate.json").write_text(json.dumps(freeze,ensure_ascii=False,allow_nan=False),encoding="utf-8")
     model = ModelAdapter(best["model"],best["parameters"],spec.seed).fit(x_dev[best["features"]],y_dev)
     model.save(artifact_dir/"model.joblib")
     emit("candidate.frozen",{"id":best["id"],"features":best["features"],"test_access":"CLOSED_UNTIL_FREEZE"})
     emit("stage",{"status":"TESTING","progress":80,"message":"Sabit aday için tek final test ölçümü"})
-    forecast = model.predict(x.iloc[b:][best["features"]])
+    routing_result = {"enabled": False, "fallback_model": best["model"], "min_regime_bars": spec.regime_routing.min_regime_bars,
+                      "assignments": {}, "states_source": "causal_hmm_development_fit", "specialists": []}
+    selected_model = best["model"]
+    if spec.regime_routing.enabled:
+        emit("stage",{"status":"TESTING","progress":76,"message":"Rejim uzmanları geliştirme verisiyle sabitleniyor"})
+        routed, routing_result = _routed_forecast(x_dev,y_dev,x,full_states[:dev_end],full_states,spec,optimization,emit)
+        forecast = routed[b:]
+        selected_model = "regime_router"
+    else:
+        forecast = model.predict(x.iloc[b:][best["features"]])
     forecast = apply_rules(forecast, [mask[b:] for mask in masks])
     reality = merged_reality(spec)
     test_bars = (df["high"].reindex(x.index[b:]).to_numpy(), df["low"].reindex(x.index[b:]).to_numpy())
@@ -592,7 +658,8 @@ def _execute(df,spec,emit,artifact_dir):
                       "price":row["close"],"return":row["return"],"pnl":float(row["equity"]-prior_equity),"signal":current,
                       "confidence":row["confidence"],"source":"backtest_curve","record_type":"position_change"})
         previous=current
-    # HMM is descriptive here; fitted on development data, never on test.
+    # HMM is fitted on development data; its forward-filtered states can route
+    # frozen specialists, but neither state mapping nor model choice sees test.
     emit("stage",{"status":"ANALYZING","progress":94,"message":"Rejimler, özellik kararlılığı ve maliyet duyarlılığı"})
     states = full_states[b:]
     # Feature intelligence is descriptive and computed after the freeze; regime
@@ -616,8 +683,8 @@ def _execute(df,spec,emit,artifact_dir):
             "curve":curve,"trades":trades,"signal_confidence":{"source":"normalized_prediction_magnitude","calibrated":False,"scale":forecast_scale},"stress_inputs":{"prediction_bps":(forecast*10000).tolist(),"actual_bps":(y[b:]*10000).tolist(),
             "signal_timestamp":[x.index[b+i].isoformat() for i in range(len(ret))],
             "test_high":test_bars[0].tolist(),"test_low":test_bars[1].tolist(),"threshold_bps":best["threshold_bps"]},"execution":{**execution,"signal_to_fill":"signal close -> next open","timezone":reality.timezone,"spread_model":reality.spread_model,"max_leverage":reality.max_leverage,"max_position_fraction":reality.max_position_fraction},"optimization":optimization,"feature_analysis":analysis,"regimes":regimes,"transition":hmm.transmat_.tolist(),
-            "selected_features":best["features"],"selected_model":best["model"],"parameters":best["parameters"],"cost_sensitivity":sensitivities,
+            "selected_features":best["features"],"selected_model":selected_model,"base_model":best["model"],"parameters":best["parameters"],"routing":routing_result,"cost_sensitivity":sensitivities,
             "split":{"development":dev_end,"gap":spec.validation.gap,"test":len(x)-b,"development_end":x.index[dev_end-1].isoformat(),"test_start":x.index[b].isoformat(),"test_end":timestamps.iloc[-1].isoformat()},
             "test_policy":{"optimizer_access":False,"candidate_frozen_before_test":True,"test_evaluations":1,"repeated_research_warning":"Klonlar aynı test dönemini tekrar ölçebilir; bu dönem küresel olarak hiç görülmemiş holdout sayılmaz."},
             "warnings":warnings,"feature_count":len(best["features"]),"annual_bars":annual,
-            "notes":["GA yalnızca seçili geliştirme özellikleri ve hedeflerini alır.","Walk-forward skorları gap ile ayrılmış kronolojik fold'lardan gelir; son model geliştirme verisinin tamamında yeniden eğitilir.","HMM durumları betimleyicidir; bu sürümde final modele yönlendirme uygulamaz.","Maliyet duyarlılığı test sonrası rapordur; aday seçmez."]}
+            "notes":["GA yalnızca seçili geliştirme özellikleri ve hedeflerini alır.","Walk-forward skorları gap ile ayrılmış kronolojik fold'lardan gelir; son model geliştirme verisinin tamamında yeniden eğitilir.","HMM durumları geliştirme verisinde nedensel olarak çıkarılır; yönlendirme açıksa sabitlenmiş uzman modelini seçer.","Maliyet duyarlılığı test sonrası rapordur; aday seçmez."]}

@@ -49,6 +49,7 @@ type AuthContextValue = {
   login: (email: string, password: string, remember: boolean) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   loginWithDemo: () => Promise<void>;
+  updateUser: (patch: Partial<AuthUser>) => void;
   logout: () => void;
 };
 
@@ -58,6 +59,7 @@ const AuthContext = createContext<AuthContextValue>({
   login: async () => {},
   register: async () => {},
   loginWithDemo: async () => {},
+  updateUser: () => {},
   logout: () => {},
 });
 
@@ -130,6 +132,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await login(DEMO_USER.email, DEMO_USER.password, true);
   }, [login]);
 
+  const updateUser = useCallback((patch: Partial<AuthUser>) => {
+    setUser(current => current ? { ...current, ...patch } : current);
+  }, []);
+
   const logout = useCallback(async () => {
     // Server-side session revoke first; the JWT must stop working everywhere.
     const token = readToken();
@@ -147,7 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
-  return <AuthContext.Provider value={{ user, ready, login, register, loginWithDemo, logout }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, ready, login, register, loginWithDemo, updateUser, logout }}>{children}</AuthContext.Provider>;
 }
 
 export const useAuth = () => useContext(AuthContext);

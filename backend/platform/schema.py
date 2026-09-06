@@ -3,6 +3,9 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+ModelId = Literal["ridge", "random_forest", "hist_gradient_boosting", "xgboost", "lightgbm"]
+
+
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -48,7 +51,7 @@ class SearchSpaceDefinition(Contract):
     features: list[str] = Field(default_factory=list, max_length=80)
     min_features: int = Field(3, ge=1, le=80)
     max_features: int = Field(30, ge=1, le=80)
-    models: list[Literal["ridge", "random_forest", "hist_gradient_boosting", "xgboost", "lightgbm"]] = Field(default_factory=lambda:["ridge"], min_length=1)
+    models: list[ModelId] = Field(default_factory=lambda:["ridge"], min_length=1)
     hyperparameters: bool = True
     thresholds_bps: list[float] = Field(default_factory=lambda:[0, .25, .5, 1, 2], min_length=1)
     regime_states: int = Field(3, ge=2, le=5)
@@ -137,6 +140,15 @@ class SignalRules(Contract):
     short: list[SignalRule] = Field(default_factory=list, max_length=10)
 
 
+class RegimeRoutingSpec(Contract):
+    """Optional routing of regime states to development-trained specialists."""
+    enabled: bool = False
+    fallback_model: ModelId = "ridge"
+    min_regime_bars: int = Field(15, ge=5, le=10000)
+    # Keys are HMM state ids serialized as strings (for example ``"0"``).
+    assignments: dict[str, ModelId] = Field(default_factory=dict, max_length=5)
+
+
 class ExperimentSpec(Contract):
     schema_version: Literal["1.0"] = "1.0"
     name: str = Field("EURUSD araştırması", min_length=1, max_length=120)
@@ -148,7 +160,7 @@ class ExperimentSpec(Contract):
     workspace_id: str | None = Field(None, max_length=36)
     timeframe: Literal["native", "10min", "1h", "4h", "1D"] = "native"
     features: FeatureSpec = Field(default_factory=FeatureSpec)
-    models: list[Literal["ridge", "random_forest", "hist_gradient_boosting", "xgboost", "lightgbm"]] = Field(default_factory=lambda: ["ridge", "xgboost"], min_length=1, max_length=5)
+    models: list[ModelId] = Field(default_factory=lambda: ["ridge", "xgboost"], min_length=1, max_length=5)
     optimization: OptimizationSpec = Field(default_factory=OptimizationSpec)
     validation: ValidationSpec = Field(default_factory=ValidationSpec)
     backtest: BacktestSpec = Field(default_factory=BacktestSpec)
@@ -157,6 +169,7 @@ class ExperimentSpec(Contract):
     search_space_id: str | None = Field(None, max_length=36)
     period: 'PeriodSpec' = Field(default_factory=lambda: PeriodSpec())
     signal_rules: 'SignalRules' = Field(default_factory=lambda: SignalRules())
+    regime_routing: RegimeRoutingSpec = Field(default_factory=RegimeRoutingSpec)
 
     @model_validator(mode="after")
     def distinct(self):

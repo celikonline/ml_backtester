@@ -64,6 +64,23 @@ def test_end_to_end_date_bounds(tmp_path):
     assert (tmp_path/'frozen_candidate.json').exists()
 
 
+def test_regime_routing_trains_specialists_without_test_access(tmp_path):
+    df = demo_prices(900)
+    spec = ExperimentSpec(models=['ridge', 'random_forest'],
+        features={'names':['rsi_14','ema_21','atr_14']},
+        validation={'method':'holdout'},
+        optimization={'algorithm':'none','max_drawdown':1},
+        regime_routing={'enabled':True,'fallback_model':'ridge','min_regime_bars':15,
+                        'assignments':{'0':'ridge','1':'random_forest','2':'ridge'}})
+    result = execute_research(df, spec, lambda *args:None, tmp_path)
+    routing = result['routing']
+    assert routing['enabled'] is True
+    assert result['selected_model'] == 'regime_router'
+    assert result['test_policy']['candidate_frozen_before_test'] is True
+    assert all(item['train_bars'] >= 0 for item in routing['specialists'])
+    assert set(routing['assignments']) == {'0','1','2'}
+
+
 @pytest.mark.parametrize('changes', [
     {'period':{'start':'2025-02-30'}},
     {'period':{'start':'2025-06-01','end':'2025-01-01'}},

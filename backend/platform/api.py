@@ -855,8 +855,12 @@ def auth_router():
         user = sess["user"]
         engine = request.app.state.experiments.engine
         with engine.begin() as con:
-            project_count = con.execute(select(func.count()).select_from(experiments)).scalar() or 0
-            backtest_count = con.execute(select(func.count()).select_from(runs).where(runs.c.status == "COMPLETED")).scalar() or 0
+            project_count = con.execute(select(func.count()).select_from(experiments).where(experiments.c.owner == user.id)).scalar() or 0
+            backtest_count = con.execute(
+                select(func.count()).select_from(runs.join(experiments, runs.c.experiment_id == experiments.c.id)).where(
+                    experiments.c.owner == user.id, runs.c.status == "COMPLETED"
+                )
+            ).scalar() or 0
         return {
             "id": user.id, "name": user.name, "email": user.email, "role": user.role,
             "created_at": user.created_at, "last_login_at": user.last_login_at,

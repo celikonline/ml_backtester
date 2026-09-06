@@ -1,0 +1,14 @@
+.section-help { position: relative; display: inline-flex; vertical-align: middle; }
+.section-help-trigger { display: inline-grid; place-items: center; width: 25px; height: 25px; padding: 0; border: 1px solid #3c5260; border-radius: 50%; color: #91a7b8; background: #16222d; }
+.section-help-trigger:hover, .section-help-trigger[aria-expanded='true'] { color: var(--green); border-color: var(--green); background: #17372f; }
+.section-help-popover { position: absolute; z-index: 30; top: calc(100% + 9px); left: 50%; width: min(330px, calc(100vw - 40px)); transform: translateX(-50%); display: grid; gap: 9px; padding: 13px 14px; border: 1px solid #3c7d68; border-radius: 8px; background: #121d27; color: #b9c8d3; box-shadow: 0 14px 35px #0009; font-size: 10px; line-height: 1.6; text-align: left; white-space: normal; }
+.section-help-popover::before { content: ''; position: absolute; top: -5px; left: calc(50% - 5px); width: 9px; height: 9px; transform: rotate(45deg); border-top: 1px solid #3c7d68; border-left: 1px solid #3c7d68; background: #121d27; }
+.section-help-popover > b { color: #e0f3eb; font-size: 11px; }
+.section-help-popover > span { display: grid; gap: 2px; }
+.section-help-popover strong { color: var(--green); font-size: 9px; letter-spacing: .03em; }
+:root[data-theme='light'] .section-help-trigger { border-color: #b5d4c8; color: #508170; background: #f1faf6; }
+:root[data-theme='light'] .section-help-trigger:hover, :root[data-theme='light'] .section-help-trigger[aria-expanded='true'] { color: #087454; border-color: #59b995; background: #e0f4ed; }
+:root[data-theme='light'] .section-help-popover { border-color: #acd9c5; background: #fff; color: #405c53; box-shadow: 0 14px 35px #1720332b; }
+:root[data-theme='light'] .section-help-popover::before { border-color: #acd9c5; background: #fff; }
+:root[data-theme='light'] .section-help-popover > b { color: #245b4a; }
+@media (max-width: 600px) { .section-help-popover { position: fixed; top: auto; left: 16px; right: 16px; bottom: 18px; width: auto; transform: none; } .section-help-popover::before { display: none; } }

@@ -433,6 +433,13 @@ class ExperimentService:
         if not set(spec.features.names)<=names: raise DomainError("Bilinmeyen özellik adı.",422,"invalid_feature")
         if any(rule.feature not in names for rule in spec.signal_rules.long + spec.signal_rules.short):
             raise DomainError("Kural indikatörü bu veri setinde bulunamadı.",422,"invalid_feature")
+        routing = spec.regime_routing
+        if routing.enabled:
+            if routing.fallback_model not in spec.models or any(model not in spec.models for model in routing.assignments.values()):
+                raise DomainError("Rejim yönlendirmesindeki modeller deney model havuzunda olmalı.",422,"invalid_regime_routing")
+            invalid_states = [key for key in routing.assignments if not key.isdigit() or int(key) >= spec.regime_states]
+            if invalid_states:
+                raise DomainError("Rejim yönlendirmesinde geçersiz durum numarası.",422,"invalid_regime_routing")
         identifier = uid()
         record = {"id":identifier,"code":f"EXP-{datetime.now().year}-{identifier[:8].upper()}","parent_id":parent_id,"snapshot_id":snapshot["id"],"workspace_id":ws["id"],
                   "name":spec.name,"status":"DRAFT","specification":spec.model_dump(),"owner":actor.get("id","local-user"),"created_at":now(),"updated_at":now()}

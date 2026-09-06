@@ -5,7 +5,15 @@
   margin: 16px 0;
   min-width: 0;
 }
-.experiment-wizard legend { font-size: 13px; padding: 0 8px; }
+.experiment-wizard legend { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 0 8px; }
+.wizard-context-heading { display: flex; align-items: center; gap: 8px; margin: 19px 0 4px; color: #d8e5ed; }
+.wizard-context-heading h3 { font-size: 13px; }
+.wizard-context-heading .section-help-trigger { width: 22px; height: 22px; }
 .experiment-wizard fieldset h3 { margin: 18px 0 10px; }
 .experiment-wizard fieldset p { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .experiment-wizard fieldset .secondary { margin-top: 12px; }
+.routing-settings { margin-top: 20px; border-color: #315247; background: #13231f; }
+.routing-settings > p { color: #8eaf9e; }
+.routing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 12px; margin-top: 16px; }
+.routing-grid label { min-width: 0; }
+.routing-summary { color: #62cba7 !important; }
